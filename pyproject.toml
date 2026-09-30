@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recruiter-copilot"
+version = "0.0.1"
+description = "Disclosed, local-first interviewer copilot: bilingual transcript, question tracking, evidence-cited post-interview analysis. GPU-local or LLM-API profiles."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Michal Drzymala" }]
+keywords = ["interview", "speech-to-text", "llm", "recruiting", "local-first"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+# Core = what BOTH profiles need (D12). Pins are the single source of truth (project.md Stack).
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn==0.52.4",
+  "websockets==16.1",
+  "python-dotenv==1.2.1",
+  "langchain-openai==1.3.5",
+  "langchain-core==1.4.9",
+  "openai==2.45.0",
+  "webrtcvad-wheels==2.0.14",
+  "numpy>=2.0,<3",
+]
+
+[project.optional-dependencies]
+# PROFILE=local — GPU or CPU speech-to-text + Ollama chat (D12)
+local = [
+  "faster-whisper==1.2.1",
+  "ctranslate2==4.8.1",
+  "av==18.1.0",
+  "onnxruntime==1.29.0",
+  "tokenizers==0.23.1",
+]
+# PROFILE=api — Anthropic chat provider (OpenAI-compatible providers need nothing extra)
+api = ["anthropic==1.1.0"]
+dev = ["pytest==9.1.1", "ruff==0.15.21", "black==26.5.1"]
+# Regenerating tests/fixtures/mock_interview.wav only. The app never speaks.
+fixtures = ["piper-tts==1.7.0"]
+
+[project.scripts]
+recruiter-copilot = "recruiter_copilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+recruiter_copilot = ["static/*.html"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# governance template-owned file; linted by the template, not by this project
+exclude = ["tests/test_decision_tools.py", "scripts/decision_tools.py"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

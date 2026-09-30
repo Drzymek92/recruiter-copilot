@@ -1,0 +1,32 @@
+{
+  "description": "Prepared bilingual transcript for the M3 cockpit demo (no mic, no live audio). Synthetic — no real person is recorded. `recruiter-copilot serve examples/demo_session` streams these turns into /events; an interviewer turn tagged with question_id marks that question asked, the candidate turn that follows marks it answered.",
+  "sample_rate": 16000,
+  "primary_language": "pl",
+  "secondary_language": "en",
+  "turns": [
+    { "speaker": "interviewer", "lang": "pl", "question_id": "q1", "t_start": 0.0, "t_end": 7.79,
+      "text": "Dzień dobry. Zacznijmy od Pana doświadczenia. Opowiedz o ostatnim projekcie produkcyjnym w Pythonie, co było najtrudniejsze?" },
+    { "speaker": "candidate", "lang": "pl", "t_start": 8.99, "t_end": 19.9,
+      "text": "Dzień dobry. Ostatnio pracowałem nad usługą wyszukiwania dokumentów. Najtrudniejsze było utrzymanie niskich opóźnień przy dużym ruchu. Przepisałem warstwę zapytań i dodałem cache." },
+    { "speaker": "interviewer", "lang": "pl", "question_id": "q2", "t_start": 21.3, "t_end": 27.53,
+      "text": "Rozumiem. A jaką funkcję opartą na modelach językowych wdrożyłeś i jak wyglądała architektura?" },
+    { "speaker": "candidate", "lang": "pl", "t_start": 28.73, "t_end": 39.7,
+      "text": "Zbudowałem asystenta opartego na wyszukiwaniu semantycznym. Pracuję z modelami językowymi od dwóch lat. Sam zbudowałem cały ten system, od wyszukiwania po interfejs." },
+    { "speaker": "interviewer", "lang": "pl", "question_id": "q3", "t_start": 41.2, "t_end": 44.02,
+      "text": "A jak mierzyłeś, że zmiana modelu była lepsza?" },
+    { "speaker": "candidate", "lang": "pl", "t_start": 45.22, "t_end": 51.77,
+      "text": "Patrzyliśmy głównie na opinie użytkowników. Wydawało się, że jest lepiej, ale nie mierzyliśmy tego formalnie." },
+    { "speaker": "interviewer", "lang": "en", "question_id": "q4", "t_start": 53.27, "t_end": 60.02,
+      "text": "Let me switch to English for this one. Describe a time you had to explain a technical trade-off to a non-technical stakeholder." },
+    { "speaker": "candidate", "lang": "en", "t_start": 61.22, "t_end": 74.46,
+      "text": "Yes, of course. I explained to our product manager why adding a cache would speed things up but could show slightly stale data, so we agreed on a short refresh window." },
+    { "speaker": "interviewer", "lang": "pl", "question_id": "q5", "t_start": 75.96, "t_end": 81.08,
+      "text": "Dziękuję. Wracając do polskiego. Gdzie i jak wdrażałeś modele w chmurze?" },
+    { "speaker": "candidate", "lang": "pl", "t_start": 82.28, "t_end": 89.12,
+      "text": "Korzystaliśmy z Amazon Web Services, konkretnie z kontenerów na ECS i kolejek. Wdrożenia szły przez CI." },
+    { "speaker": "interviewer", "lang": "pl", "question_id": "q6", "t_start": 90.52, "t_end": 97.32,
+      "text": "Ostatnie pytanie. W CV piszesz o czterech latach w firmie X, jaką rolę pełniłeś w ostatnim roku?" },
+    { "speaker": "candidate", "lang": "pl", "t_start": 98.52, "t_end": 104.59,
+      "text": "Byłem starszym inżynierem i prowadziłem zespół. Odpowiadałem za architekturę wyszukiwania." }
+  ]
+}

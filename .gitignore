@@ -1,0 +1,20 @@
+# environment / secrets
+.venv/
+.env
+config/.env
+
+# candidate data never enters git (consent + purge, D18)
+sessions/
+*.wav
+!tests/fixtures/mock_interview.wav
+logs/
+
+# python
+__pycache__/
+*.py[co]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.cache/

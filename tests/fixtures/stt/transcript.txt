@@ -1,0 +1,12 @@
+[00:00] interviewer (pl): Dzień dobry. Zacznijmy od Pana doświadczenia. Opowiedz o ostatnim projekcie produkcyjnym w Pekonie. To było najtrudniejsze.
+[00:08] candidate (pl): Dzień dobry. Ostatnio pracowałem nad usługą wyszukiwania dokumentów. Najtrudniejsze było utrzymanie niskich opóźnień przy dużym ruchu. Przypisałem warstwę zapytań i dodałem cacha.
+[00:20] interviewer (pl): Rozumiem. A jaką funkcję opartą na modelach językowych wdrożyłeś i jak wyglądała architektura?
+[00:28] candidate (pl): Zbudowałem asystenta opartego na wyszukiwaniu semantycznym. Pracuję z modelami językowymi od dwóch lat. Tam zbudowałem cały ten system od wyszukiwania po interfejs.
+[00:40] interviewer (pl): A jak mierzyłeś, że zmiana modelu była lepsza?
+[00:44] candidate (pl): Patrzyliśmy głównie na opinii użytkowników. Wydawało się, że odpowiedzi są lepsze po zmianie modelu.
+[00:52] interviewer (en): Let me switch to English for this one. Describe a time you had to explain a technical trade-off to a non-technical stakeholder.
+[01:00] candidate (en): Yes, of course. I explained to our product manager why we needed to cache the model responses. I told him it would make the system faster, but the answers could be a little bit old. He understood and we agreed on a shorter cache time.
+[01:15] interviewer (pl): Dziękuję. Wracając do polskiego, gdzie i jak wdrażałeś modele w murza?
+[01:21] candidate (pl): Korzystaliśmy z Amazon Web Services, konkretnie z kontenerów. Wdrożenia szły przez zautomatyzowany proces.
+[01:30] interviewer (pl): Ostatnie pytanie. Civi piszesz o 4 latach w firmie X. Jaką rolę pełniłeś w ostatnim roku?
+[01:38] candidate (pl): Byłem starszym inżynierem i prowadziłem zespół. Odpowiadałem za całą platformę wyszukiwania.

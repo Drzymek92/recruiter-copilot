@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>recruiter-copilot cockpit</title>
+<style>
+  /* D14: no CDN, no webfont, no build step — everything inline. Loopback only. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #5c6370;
+    --line: #d9dde3; --accent: #2b5ce6; --accent-ink: #ffffff;
+    --pending: #6b7280; --asked: #b45309; --answered: #15803d; --skipped: #9ca3af;
+    --chip-bg: #eef1f6; --focus: #2b5ce6; --warn-bg: #fff4e5; --warn-ink: #7a4b00;
+    --interviewer: #2b5ce6; --candidate: #7c3aed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f26; --ink: #e8eaed; --muted: #9aa2ad;
+      --line: #2c313a; --accent: #6b8cff; --accent-ink: #0b0d10;
+      --pending: #9aa2ad; --asked: #f0a338; --answered: #4ade80; --skipped: #6b7280;
+      --chip-bg: #262b34; --focus: #6b8cff; --warn-bg: #3a2c12; --warn-ink: #f0c983;
+      --interviewer: #6b8cff; --candidate: #b794f6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .disclosure {
+    width: 100%; margin-top: 6px; font-size: 12.5px; color: var(--muted);
+  }
+  .disclosure strong { color: var(--ink); }
+  .egress {
+    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 10px;
+    background: var(--chip-bg); font-size: 11.5px;
+  }
+  .egress.out { background: var(--warn-bg); color: var(--warn-ink); }
+  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  }
+  section > h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+    margin: 0 0 10px; font-weight: 600;
+  }
+  .counts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; padding: 0; list-style: none; }
+  .counts li {
+    font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--chip-bg);
+    border-left: 3px solid var(--pending);
+  }
+  .counts li.asked { border-left-color: var(--asked); }
+  .counts li.answered { border-left-color: var(--answered); }
+  .counts li.skipped { border-left-color: var(--skipped); }
+  ol.questions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .q { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; border-left: 4px solid var(--pending); }
+  .q[data-state="asked"] { border-left-color: var(--asked); }
+  .q[data-state="answered"] { border-left-color: var(--answered); }
+  .q[data-state="skipped"] { border-left-color: var(--skipped); opacity: .82; }
+  .q .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .q .qid { font-variant: small-caps; color: var(--muted); font-size: 12px; letter-spacing: .03em; }
+  .q .state-badge { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+  .q[data-state="pending"] .state-badge { color: var(--pending); }
+  .q[data-state="asked"] .state-badge { color: var(--asked); }
+  .q[data-state="answered"] .state-badge { color: var(--answered); }
+  .q[data-state="skipped"] .state-badge { color: var(--skipped); }
+  .q .text { margin: 5px 0 4px; }
+  .q .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .q .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .q .answers { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .q .answers li { font-size: 12.5px; background: var(--chip-bg); border-radius: 7px; padding: 6px 9px; border-left: 3px solid var(--answered); }
+  .q .answers .span-meta { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .q .notes-wrap { margin-top: 8px; }
+  .q .notes-wrap label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+  .q textarea {
+    width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: vertical; min-height: 40px;
+  }
+  .q .saved-flag { font-size: 11px; color: var(--answered); margin-left: 4px; }
+  /* proposals (D16 — shown, applied only on a click) */
+  #proposals { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #proposals:empty::after { content: "No pending suggestions."; color: var(--muted); font-style: italic; font-size: 13px; }
+  .proposal { border: 1px solid var(--asked); border-radius: 9px; padding: 9px 11px; background: var(--warn-bg); }
+  .proposal .p-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .proposal .p-qid { font-variant: small-caps; font-size: 12px; letter-spacing: .03em; }
+  .proposal .p-conf { font-size: 11px; color: var(--muted); }
+  .proposal .p-evidence { font-size: 12.5px; margin: 4px 0 8px; color: var(--ink); }
+  .proposal .p-actions { display: flex; gap: 6px; }
+  button {
+    font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  #transcript { max-height: 62vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .line { padding: 6px 10px; border-radius: 8px; background: var(--chip-bg); }
+  .line .who { font-weight: 600; font-size: 12px; }
+  .line.interviewer .who { color: var(--interviewer); }
+  .line.candidate .who { color: var(--candidate); }
+  .line .stamp { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .line .body { margin-top: 2px; display: block; }
+  .empty { color: var(--muted); font-style: italic; }
+  /* #984 up-to picker: while picking, every eligible transcript line is a button — "save up to here" */
+  .pick-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 8px; padding: 6px 10px;
+              border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); font-size: 12.5px; }
+  .pick-bar[hidden] { display: none; }
+  .pick-bar button { flex: none; }
+  #transcript.picking .line { padding: 0; }
+  .pick-line { display: block; width: 100%; margin: 0; padding: 6px 10px; border: 0; border-radius: 8px;
+               background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .pick-line:hover:not(:disabled) { box-shadow: inset 0 0 0 2px var(--accent); }
+  .pick-line:disabled { cursor: not-allowed; }
+  /* consent gate screen (D18) */
+  #gate { max-width: 620px; margin: 8vh auto; padding: 28px 30px; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 12px; }
+  #gate h2 { margin-top: 0; }
+  #gate .disc { margin: 14px 0; padding: 12px 14px; background: var(--chip-bg); border-radius: 8px; font-size: 13px; }
+  .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .live { font-size: 12px; color: var(--muted); }
+  .live::before { content: "\25CF"; margin-right: 5px; color: var(--skipped); }
+  .live.on::before { color: var(--answered); }
+  /* live capture panel (M4, D13) — browser mic + call tab → ws:/audio, one socket per role */
+  #live-panel { margin-bottom: 16px; }
+  .live-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .live-controls .status { font-size: 12.5px; color: var(--muted); }
+  .live-controls .status.err { color: var(--warn-ink); background: var(--warn-bg); padding: 1px 8px; border-radius: 10px; }
+  .roles { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .role { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 9px; border-radius: 8px; background: var(--chip-bg); }
+  .role .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--skipped); align-self: center; flex: none; }
+  .role[data-state="connecting"] .dot { background: var(--asked); }
+  .role[data-state="on"] .dot { background: var(--answered); }
+  .role[data-state="error"] .dot { background: var(--warn-ink); }
+  .role .who { font-weight: 600; }
+  .role.interviewer .who { color: var(--interviewer); }
+  .role.candidate .who { color: var(--candidate); }
+  .role .src { color: var(--muted); }
+  .role .role-meta { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12.5px; margin: 6px 0 0; color: var(--ink); }
+  .note.sub { color: var(--muted); }
+  /* #995: after Live Stop persists transcript.json, the copyable analyse command for the session */
+  #live-saved { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  #live-saved[hidden] { display: none; }
+  #live-saved .note strong { color: var(--answered); }
+  .analyse-cmd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .analyse-cmd code {
+    flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap;
+    background: var(--chip-bg); padding: 6px 9px; border-radius: 7px;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12.5px;
+  }
+  .analyse-cmd button { flex: none; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<a class="visually-hidden" href="#transcript-panel">Skip to transcript</a>
+
+<div id="gate" hidden role="alertdialog" aria-labelledby="gate-h" aria-describedby="gate-d">
+  <h2 id="gate-h">Consent required</h2>
+  <p id="gate-d">This session cannot be opened until the candidate's recording consent is recorded
+    in the session bundle (D18). Recording and analysis stay blocked until then.</p>
+  <div class="disc" id="gate-disclosure" aria-live="polite"></div>
+  <p class="sub">Record consent in <code>session.json</code> (or the intake form) and reload.</p>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1 id="job-title">&hellip;</h1>
+    <span class="sub" id="candidate"></span>
+    <div class="toolbar">
+      <span class="live" id="live" aria-live="polite">connecting&hellip;</span>
+      <button id="replay-btn" type="button">Replay demo</button>
+    </div>
+    <p class="disclosure" id="disclosure" aria-live="polite"></p>
+  </header>
+
+  <main>
+    <section aria-labelledby="tracker-h">
+      <h2 id="proposals-h">Suggestions <span class="sub">(matcher proposes; you confirm)</span></h2>
+      <ul id="proposals" aria-labelledby="proposals-h" aria-live="polite"></ul>
+      <h2 id="tracker-h">Question bank</h2>
+      <ul class="counts" id="counts" aria-label="Question state counts"></ul>
+      <ol class="questions" id="questions"></ol>
+    </section>
+
+    <div>
+      <section id="live-panel" aria-labelledby="live-h">
+        <h2 id="live-h">Live capture <span class="sub">(mic + call tab &rarr; this machine only)</span></h2>
+        <div class="live-controls">
+          <button id="live-start" type="button" class="primary">Start live capture</button>
+          <button id="live-stop" type="button" disabled>Stop</button>
+          <span class="status" id="live-status" role="status" aria-live="polite">idle</span>
+        </div>
+        <ul class="roles" aria-label="Capture roles">
+          <li class="role interviewer" id="role-interviewer" data-state="off">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="who">interviewer</span><span class="src">your microphone</span>
+            <span class="role-meta" id="role-interviewer-meta">off</span>
+          </li>
+          <li class="role candidate" id="role-candidate" data-state="off">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="who">candidate</span><span class="src">the call tab's audio</span>
+            <span class="role-meta" id="role-candidate-meta">off</span>
+          </li>
+        </ul>
+        <p class="note"><strong>Wear headphones.</strong> Speakers are told apart by source &mdash; the
+          mic is you, the shared tab is the candidate. On loudspeakers the mic hears the candidate too
+          and the speaker tags degrade.</p>
+        <p class="note sub" id="live-support">Chrome or Edge on a desktop: when asked, share the
+          <em>call tab</em> and tick <em>&ldquo;Share tab audio&rdquo;</em>. Firefox and Safari cannot
+          share tab audio (see README &rarr; Browser support). A recording uploaded afterwards
+          (<code>recruiter-copilot analyse --audio</code>) always works. Stop saves the live
+          transcript into the session folder, so <code>recruiter-copilot analyse &lt;session&gt;</code>
+          runs on it afterwards.</p>
+        <div id="live-saved" hidden>
+          <p class="note"><strong>Transcript saved.</strong>
+            <span id="live-saved-path"></span></p>
+          <p class="note sub">Run the post-call analysis on this session (loopback, local):</p>
+          <div class="analyse-cmd">
+            <code id="analyse-cmd" tabindex="0"></code>
+            <button id="analyse-copy" type="button">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="transcript-panel" aria-labelledby="transcript-h">
+        <h2 id="transcript-h">Transcript</h2>
+        <div class="pick-bar" id="pick-bar" hidden>
+          <span id="pick-status" role="status" aria-live="polite"></span>
+          <button id="pick-cancel" type="button">Cancel</button>
+        </div>
+        <ul id="transcript" aria-live="polite" aria-relevant="additions">
+          <li class="empty">No transcript yet. Start live capture, or run the replay demo.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const STATES = ["pending", "asked", "answered", "skipped"];
+let PRIMARY = "en";
+
+function fmtStamp(t) {
+  t = Math.max(0, Math.floor(t || 0));
+  return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+}
+
+function renderDisclosure(d, into) {
+  if (!d) return;
+  const egress = d.data_left_machine
+    ? '<span class="egress out">data leaves this machine</span>'
+    : '<span class="egress">stays on this machine</span>';
+  const stt = escapeHtml(d.stt_provider) + (d.stt_model ? ' (' + escapeHtml(d.stt_model) + ')' : '');
+  const chat = escapeHtml(d.chat_provider) + (d.chat_model ? ' (' + escapeHtml(d.chat_model) + ')' : '');
+  into.innerHTML =
+    'Profile <strong>' + escapeHtml(d.profile) + '</strong> &middot; transcription ' + stt +
+    ' &middot; analysis ' + chat + egress;
+}
+
+function renderCounts(counts) {
+  $("counts").innerHTML = STATES.map((s) =>
+    '<li class="' + s + '">' + (counts[s] || 0) + ' ' + s + '</li>').join("");
+}
+
+function stateButtons(q) {
+  return STATES.filter((s) => s !== q.state).map((s) => {
+    const on = q.allowed.includes(s);
+    return '<button type="button" data-qid="' + q.id + '" data-to="' + s + '"' +
+      (on ? '' : ' disabled') + '>mark ' + s + '</button>';
+  }).join("");
+}
+
+function answerSpans(q) {
+  if (!q.answer_spans || !q.answer_spans.length) return '';
+  const items = q.answer_spans.map((s) =>
+    '<li><div class="span-meta">' + fmtStamp(s.t_start) + '&ndash;' + fmtStamp(s.t_end) +
+    (s.saved_at ? ' &middot; saved ' + escapeHtml(s.saved_at) : '') + '</div>' +
+    '<div class="span-text">' + escapeHtml(s.text) + '</div></li>').join("");
+  return '<ul class="answers" aria-label="Saved answers for ' + q.id + '">' + items + '</ul>';
+}
+
+function saveAnswerControl(q) {
+  // F4: a span can only be pinned once the question has an asked-mark (asked or answered).
+  const canSave = q.asked_at != null;
+  if (!canSave) return '';
+  const n = q.answers || 0;
+  const flag = n ? '<span class="saved-flag">' + n + ' saved</span>' : '';
+  // Save answer: asked-mark → the next question's asked-mark, or now (server decides, #984).
+  // Save up to…: the interviewer picks the last line of the answer in the transcript.
+  return '<button type="button" class="primary" data-action="save-answer" data-qid="' + q.id +
+    '">Save answer</button>' +
+    '<button type="button" data-action="pick-up-to" data-qid="' + q.id + '" data-asked-at="' +
+    q.asked_at + '">Save up to&hellip;</button>' + flag;
+}
+
+function notesControl(q) {
+  return '<div class="notes-wrap"><label for="notes-' + q.id + '">Notes</label>' +
+    '<textarea id="notes-' + q.id + '" data-notes-qid="' + q.id + '" rows="2" ' +
+    'placeholder="Interviewer notes…">' + escapeHtml(q.notes || '') + '</textarea></div>';
+}
+
+function renderQuestions(questions) {
+  $("questions").innerHTML = questions.map((q) => {
+    const lang = q.assesses_language ? ' &middot; language check' : '';
+    const reqs = q.requirement_ids.length ? ' &middot; ' + q.requirement_ids.join(", ") : '';
+    return '<li class="q" data-state="' + q.state + '">' +
+      '<div class="top"><span class="qid">' + q.id + '</span>' +
+      '<span class="state-badge">' + q.state + '</span></div>' +
+      '<p class="text">' + escapeHtml(q.text) + '</p>' +
+      '<p class="meta">' + escapeHtml(q.intent) + reqs + lang + '</p>' +
+      '<div class="actions">' + stateButtons(q) + saveAnswerControl(q) + '</div>' +
+      answerSpans(q) + notesControl(q) + '</li>';
+  }).join("");
+}
+
+function renderProposals(proposals) {
+  const el = $("proposals");
+  el.innerHTML = (proposals || []).map((p) => {
+    const conf = Math.min(100, Math.round((p.confidence || 0) * 100));
+    return '<li class="proposal">' +
+      '<div class="p-top"><span class="p-qid">you may have just asked ' + escapeHtml(p.question_id) +
+      '</span><span class="p-conf">' + conf + '% &middot; ' + escapeHtml(p.route) + '</span></div>' +
+      '<p class="p-evidence">' + escapeHtml(p.evidence) + '</p>' +
+      '<div class="p-actions">' +
+      '<button type="button" class="primary" data-action="confirm-proposal" data-qid="' +
+      p.question_id + '">Confirm &mdash; mark asked</button>' +
+      '<button type="button" data-action="dismiss-proposal" data-qid="' + p.question_id +
+      '">Dismiss</button></div></li>';
+  }).join("");
+}
+
+// ── #984 up-to picker: "Save up to…" turns the transcript into a list of pick buttons ──────────
+// pick.qid is the question being saved; a line is eligible from its asked-mark on. Mouse: click a
+// line. Keyboard: Tab/↑/↓/Home/End move between eligible lines, Enter/Space picks, Esc cancels.
+// Re-renders (every broadcast) keep the mode and the focused line.
+let lastTranscript = [];
+const pick = { qid: null, askedAt: 0 };
+
+function lineHtml(l) {
+  const who = l.speaker || "unknown";
+  const lang = l.lang ? ' [' + l.lang + ']' : '';
+  return '<span class="who">' + who + '</span><span class="stamp">' + fmtStamp(l.t_start) + lang +
+    '</span><span class="body">' + escapeHtml(l.text) + '</span>';
+}
+
+function renderTranscript(lines) {
+  lastTranscript = lines || [];
+  const el = $("transcript");
+  const picking = pick.qid != null;
+  el.classList.toggle("picking", picking);
+  if (!lastTranscript.length) {
+    el.innerHTML = '<li class="empty">No transcript yet. Start live capture, or run the replay demo.</li>';
+    return;
+  }
+  const active = document.activeElement;
+  const focusedT = picking && active && active.classList.contains("pick-line") ? active.dataset.t : null;
+  el.innerHTML = lastTranscript.map((l) => {
+    const who = l.speaker || "unknown";
+    if (!picking) return '<li class="line ' + who + '">' + lineHtml(l) + '</li>';
+    const ok = l.t_start >= pick.askedAt;
+    return '<li class="line ' + who + '"><button type="button" class="pick-line" data-t="' + l.t_start +
+      '"' + (ok ? '' : ' disabled') + '><span class="visually-hidden">Save up to here: </span>' +
+      lineHtml(l) + '</button></li>';
+  }).join("");
+  if (focusedT != null) {
+    const again = el.querySelector('.pick-line[data-t="' + focusedT + '"]');
+    if (again) again.focus();
+  } else if (!picking) {
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+function pickLines() {
+  return Array.from(document.querySelectorAll("#transcript .pick-line:not(:disabled)"));
+}
+
+function startPick(qid, askedAt) {
+  pick.qid = qid;
+  pick.askedAt = Number.isFinite(askedAt) ? askedAt : 0;
+  $("pick-bar").hidden = false;
+  $("pick-status").textContent = "Saving " + qid + " — choose the last transcript line of the answer " +
+    "(click, or ↑/↓ then Enter; Esc cancels)";
+  renderTranscript(lastTranscript);
+  const eligible = pickLines();
+  if (eligible.length) eligible[eligible.length - 1].focus();   // the latest line is the likely bound
+  else $("pick-cancel").focus();
+}
+
+function endPick(returnFocus) {
+  const qid = pick.qid;
+  pick.qid = null;
+  $("pick-bar").hidden = true;
+  $("pick-status").textContent = "";
+  renderTranscript(lastTranscript);
+  if (returnFocus && qid) {
+    const btn = document.querySelector('button[data-action="pick-up-to"][data-qid="' + qid + '"]');
+    if (btn) btn.focus();
+  }
+}
+
+async function pickLine(t) {
+  const qid = pick.qid;
+  if (qid == null) return;
+  endPick(true);
+  await saveAnswer(qid, t);
+}
+
+function pickKeydown(e) {
+  if (pick.qid == null) return;
+  if (e.key === "Escape") { e.preventDefault(); endPick(true); return; }
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+  const lines = pickLines();
+  if (!lines.length) return;
+  const i = lines.indexOf(document.activeElement);
+  let next = e.key === "Home" ? 0 : e.key === "End" ? lines.length - 1 : i + (e.key === "ArrowDown" ? 1 : -1);
+  next = Math.max(0, Math.min(lines.length - 1, next));
+  e.preventDefault();
+  lines[next].focus();
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// A re-render replaces the notes textareas and the per-question buttons; preserve the one holding
+// focus so a broadcast mid-edit does not wipe or reset the caret, and a keyboard user is not
+// dropped to <body> after a click that triggers a broadcast. The user's own edits win until blur.
+function captureNotesFocus() {
+  const el = document.activeElement;
+  if (!el || !el.dataset) return null;
+  if (el.dataset.notesQid != null) {
+    return { qid: el.dataset.notesQid, value: el.value, start: el.selectionStart, end: el.selectionEnd };
+  }
+  if (el.dataset.qid != null && el.closest("#questions")) {
+    return { qid: el.dataset.qid, action: el.dataset.action || "", to: el.dataset.to || "" };
+  }
+  return null;
+}
+function restoreNotesFocus(saved) {
+  if (!saved) return;
+  if (saved.value == null) {
+    const sel = saved.action
+      ? 'button[data-action="' + saved.action + '"][data-qid="' + saved.qid + '"]'
+      : 'button[data-to="' + saved.to + '"][data-qid="' + saved.qid + '"]';
+    const btn = document.querySelector("#questions " + sel);
+    if (btn && !btn.disabled) btn.focus();
+    return;
+  }
+  const el = document.querySelector('textarea[data-notes-qid="' + saved.qid + '"]');
+  if (!el) return;
+  el.value = saved.value;
+  el.focus();
+  try { el.setSelectionRange(saved.start, saved.end); } catch (e) { /* ignore */ }
+}
+
+function render(state) {
+  PRIMARY = (state.languages && state.languages.primary) || "en";
+  $("job-title").textContent = state.job.title;
+  $("candidate").textContent = state.candidate + " · " + PRIMARY +
+    (state.languages.secondary ? " + " + state.languages.secondary : "");
+  renderDisclosure(state.disclosure, $("disclosure"));
+  renderCounts(state.counts);
+  const savedFocus = captureNotesFocus();
+  renderProposals(state.proposals);
+  renderQuestions(state.questions);
+  restoreNotesFocus(savedFocus);
+  renderTranscript(state.transcript);
+  renderLive(state.live);
+}
+
+// ── Live capture (M4, D13): mic + call-tab audio → 16 kHz PCM16 → ws:/audio, one socket per role ──
+const TARGET_RATE = 16000;
+const CHUNK_SAMPLES = 1600;              // 100 ms per websocket message
+const LIVE_ROLES = ["interviewer", "candidate"];
+const live = { ctx: null, tracks: [], nodes: [], sockets: {}, running: false, dropped: 0, mode: "" };
+
+// Linear resampler with phase carry across blocks: float32 at the context rate in, Int16 chunks
+// of exactly CHUNK_SAMPLES at TARGET_RATE out. Used verbatim inside the AudioWorklet (via
+// toString) and on the main thread by the ScriptProcessor fallback, so both paths sound the same.
+function makeResampler(inRate, outRate, chunkSamples, onChunk) {
+  const ratio = inRate / outRate;
+  let phase = 0, prev = 0, out = new Int16Array(chunkSamples), n = 0;
+  return function feed(x) {
+    const len = x.length;
+    if (!len) return;
+    let p = phase;
+    for (;;) {
+      let v;
+      if (p < 0) { v = prev + (x[0] - prev) * (p + 1); }
+      else {
+        const i = Math.floor(p);
+        if (i + 1 >= len) break;
+        v = x[i] + (x[i + 1] - x[i]) * (p - i);
+      }
+      out[n++] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+      if (n === chunkSamples) { onChunk(out.buffer); out = new Int16Array(chunkSamples); n = 0; }
+      p += ratio;
+    }
+    phase = p - len;
+    prev = x[len - 1];
+  };
+}
+
+function workletSource() {
+  return makeResampler.toString() + "\n" +
+    "class PcmResampler extends AudioWorkletProcessor {\n" +
+    "  constructor(o) { super(); const p = o.processorOptions;\n" +
+    "    this.feed = makeResampler(sampleRate, p.targetRate, p.chunkSamples, (b) => this.port.postMessage(b, [b])); }\n" +
+    "  process(inputs) { const inp = inputs[0]; if (!inp || !inp.length) return true;\n" +
+    "    let x = inp[0];\n" +
+    "    if (inp.length > 1) { x = new Float32Array(inp[0].length);\n" +
+    "      for (let c = 0; c < inp.length; c++) for (let i = 0; i < x.length; i++) x[i] += inp[c][i] / inp.length; }\n" +
+    "    this.feed(x); return true; }\n" +
+    "}\n" +
+    "registerProcessor('pcm-resampler', PcmResampler);\n";
+}
+
+function setRole(role, state, meta) {
+  const li = $("role-" + role);
+  li.dataset.state = state;
+  if (meta != null) $("role-" + role + "-meta").textContent = meta;
+}
+
+function setLiveStatus(text, isError) {
+  const el = $("live-status");
+  el.textContent = text;
+  el.classList.toggle("err", !!isError);
+}
+
+// #995: once Live Stop persists transcript.json the server sends a `saved` block; show the exact
+// copyable `analyse <session_dir>` command so the interviewer can jump straight to the post-call
+// run. Every value is session-derived → textContent only (no innerHTML sink).
+function renderSaved(saved) {
+  const box = $("live-saved");
+  if (!saved || !saved.session_dir) { box.hidden = true; return; }
+  const cmd = "recruiter-copilot analyse " + saved.session_dir;
+  const code = $("analyse-cmd");
+  code.textContent = cmd;
+  code.dataset.cmd = cmd;
+  const path = saved.path || (saved.session_dir + "/transcript.json");
+  const n = saved.lines || 0;
+  $("live-saved-path").textContent =
+    "Saved " + n + " line" + (n === 1 ? "" : "s") + " to " + path + ".";
+  box.hidden = false;
+}
+
+function renderLive(lv) {
+  // Server truth for the role meters; the local capture state owns the dot colour while running.
+  if (!lv) return;
+  renderSaved(lv.saved);
+  LIVE_ROLES.forEach((role) => {
+    const r = lv.roles && lv.roles[role];
+    const local = live.sockets[role];
+    if (!r) { if (!local) setRole(role, "off", "off"); return; }
+    const meta = r.seconds.toFixed(1) + " s · " + r.segments + " seg";
+    if (local && local.readyState === 1) setRole(role, "on", meta);
+    else setRole(role, live.running ? "connecting" : "off", r.connected ? meta : meta + " · closed");
+  });
+  if (live.running) {
+    const pending = lv.pending_segments || 0;
+    setLiveStatus("streaming (" + live.mode + ")" + (pending ? " · decoding " + pending : "") +
+      (live.dropped ? " · dropped " + live.dropped : ""), false);
+  } else if (lv.lines) {
+    // #988: after Stop the server drains the decode backlog and saves transcript.json (D18: purgeable)
+    const saved = lv.saved ? " · transcript saved to the session folder (" + lv.saved.lines +
+      " line" + (lv.saved.lines === 1 ? "" : "s") + ")" : "";
+    setLiveStatus("stopped · " + lv.lines + " live line" + (lv.lines === 1 ? "" : "s") + saved, false);
+  }
+}
+
+function openAudioSocket(role) {
+  return new Promise((resolve, reject) => {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(proto + "//" + location.host + "/audio?role=" + role);
+    ws.binaryType = "arraybuffer";
+    let ready = false;
+    setRole(role, "connecting", "connecting…");
+    ws.onmessage = (ev) => {
+      let msg = {};
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === "ready") { ready = true; setRole(role, "on", "0.0 s"); resolve(ws); }
+      else if (msg.type === "error") { setRole(role, "error", msg.error); reject(new Error(role + ": " + msg.error)); }
+      else if (msg.type === "ended") { setRole(role, "off", (msg.segments || 0) + " seg · closed"); }
+    };
+    ws.onerror = () => { if (!ready) { setRole(role, "error", "refused"); reject(new Error(role + ": socket refused (consent? server?)")); } };
+    ws.onclose = () => { if (!ready) reject(new Error(role + ": socket closed before ready")); if (live.running) setRole(role, "error", "socket closed"); };
+    ws.onopen = () => ws.send(JSON.stringify({ type: "hello", sample_rate: TARGET_RATE, format: "pcm16", channels: 1 }));
+  });
+}
+
+function sendChunk(role, buffer) {
+  const ws = live.sockets[role];
+  if (!ws || ws.readyState !== 1) return;
+  if (ws.bufferedAmount > 1000000) { live.dropped += 1; return; }  // 30 s behind: drop, don't grow
+  ws.send(buffer);
+}
+
+async function attachSource(ctx, stream, role) {
+  const source = ctx.createMediaStreamSource(stream);
+  const mute = ctx.createGain();
+  mute.gain.value = 0;                     // keeps the graph pulled without playing anything back
+  let node;
+  if (ctx.audioWorklet && typeof AudioWorkletNode === "function") {
+    if (!live.workletUrl) {
+      live.workletUrl = URL.createObjectURL(new Blob([workletSource()], { type: "application/javascript" }));
+      await ctx.audioWorklet.addModule(live.workletUrl);
+    }
+    node = new AudioWorkletNode(ctx, "pcm-resampler", {
+      numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: "explicit",
+      processorOptions: { targetRate: TARGET_RATE, chunkSamples: CHUNK_SAMPLES },
+    });
+    node.port.onmessage = (ev) => sendChunk(role, ev.data);
+    live.mode = "worklet";
+  } else {
+    // Fallback: deprecated ScriptProcessorNode, same resampler on the main thread.
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    const feed = makeResampler(ctx.sampleRate, TARGET_RATE, CHUNK_SAMPLES, (b) => sendChunk(role, b));
+    node.onaudioprocess = (ev) => feed(ev.inputBuffer.getChannelData(0));
+    live.mode = "scriptprocessor";
+  }
+  source.connect(node);
+  node.connect(mute);
+  mute.connect(ctx.destination);
+  live.nodes.push(source, node, mute);
+}
+
+async function startLive() {
+  if (live.running) return;
+  const md = navigator.mediaDevices;
+  if (!md || !md.getUserMedia) { setLiveStatus("this browser cannot capture audio — use post-hoc upload", true); return; }
+  if (!md.getDisplayMedia) { setLiveStatus("this browser cannot share tab audio — use post-hoc upload", true); return; }
+  $("live-start").disabled = true;
+  live.dropped = 0;
+  try {
+    setLiveStatus("requesting microphone…", false);
+    const mic = await md.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    setLiveStatus("pick the CALL TAB and tick “Share tab audio”…", false);
+    const tab = await md.getDisplayMedia({ video: true, audio: true, selfBrowserSurface: "exclude", systemAudio: "include" });
+    tab.getVideoTracks().forEach((t) => t.stop());      // audio only; the video was the price of the picker
+    if (!tab.getAudioTracks().length) {
+      mic.getTracks().forEach((t) => t.stop());
+      throw new Error("no tab audio was shared — choose a tab and tick “Share tab audio”");
+    }
+    live.tracks = [...mic.getAudioTracks(), ...tab.getAudioTracks()];
+    tab.getAudioTracks()[0].addEventListener("ended", () => { if (live.running) stopLive("tab sharing stopped"); });
+
+    setLiveStatus("connecting…", false);
+    const [wsI, wsC] = await Promise.all([openAudioSocket("interviewer"), openAudioSocket("candidate")]);
+    live.sockets.interviewer = wsI;
+    live.sockets.candidate = wsC;
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    live.ctx = new AC();
+    await attachSource(live.ctx, mic, "interviewer");
+    await attachSource(live.ctx, tab, "candidate");
+    if (live.ctx.state === "suspended") await live.ctx.resume();
+    live.running = true;
+    $("live-stop").disabled = false;
+    $("live-stop").focus();                  // Start just disabled itself; keep keyboard focus in the panel
+    setLiveStatus("streaming (" + live.mode + ") · " + live.ctx.sampleRate + " Hz → " + TARGET_RATE + " Hz", false);
+  } catch (err) {
+    await teardownLive();
+    setLiveStatus("could not start: " + (err && err.message ? err.message : err), true);
+    LIVE_ROLES.forEach((r) => { if ($("role-" + r).dataset.state !== "error") setRole(r, "off", "off"); });
+    $("live-start").disabled = false;
+  }
+}
+
+async function teardownLive() {
+  live.running = false;
+  live.tracks.forEach((t) => { try { t.stop(); } catch (e) { /* already stopped */ } });
+  live.tracks = [];
+  live.nodes.forEach((n) => { try { n.disconnect(); } catch (e) { /* ignore */ } });
+  live.nodes = [];
+  if (live.ctx) { try { await live.ctx.close(); } catch (e) { /* ignore */ } live.ctx = null; }
+  live.workletUrl = null;                   // a new context needs the module added again
+  const closing = LIVE_ROLES.map((role) => new Promise((done) => {
+    const ws = live.sockets[role];
+    delete live.sockets[role];
+    if (!ws || ws.readyState !== 1) { done(); return; }
+    const timer = setTimeout(() => { try { ws.close(); } catch (e) { /* ignore */ } done(); }, 2000);
+    ws.addEventListener("close", () => { clearTimeout(timer); done(); });
+    ws.send(JSON.stringify({ type: "end" }));   // the server flushes the last segment, then closes
+  }));
+  await Promise.all(closing);
+}
+
+async function stopLive(reason) {
+  if (!live.running) return;
+  $("live-stop").disabled = true;
+  setLiveStatus(reason ? reason + " — stopping…" : "stopping…", false);
+  await teardownLive();
+  setLiveStatus("stopped" + (reason ? " (" + reason + ")" : "") + " — the last segments finish decoding", false);
+  $("live-start").disabled = false;
+  $("live-start").focus();
+}
+
+async function transition(qid, to) {
+  const body = { state: to };
+  // A hand click on "mark asked" stamps the asked-mark at the latest transcript line, so Save
+  // answer has a start on a live call (a confirmed proposal stamps its own matched line).
+  if (to === "asked" && lastTranscript.length) body.at = lastTranscript[lastTranscript.length - 1].t_start;
+  const r = await fetch("/question/" + encodeURIComponent(qid) + "/state", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setLive("rejected: " + (err.error || r.status), false);
+  }
+  // the /events broadcast re-renders; no optimistic update needed.
+}
+
+async function postJson(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setLive("rejected: " + (err.error || r.status), false);
+  }
+  return r;
+  // the /events broadcast re-renders; no optimistic update needed.
+}
+
+function saveAnswer(qid, upTo) {
+  // no up_to → the server auto-closes at the next question's asked-mark, else runs to now (#984)
+  return postJson("/question/" + encodeURIComponent(qid) + "/answer", upTo == null ? {} : { up_to: upTo });
+}
+function saveNotes(qid, notes) {
+  return postJson("/question/" + encodeURIComponent(qid) + "/notes", { notes });
+}
+function confirmProposal(qid) { return postJson("/proposals/" + encodeURIComponent(qid) + "/confirm", {}); }
+function dismissProposal(qid) { return postJson("/proposals/" + encodeURIComponent(qid) + "/dismiss", {}); }
+
+function setLive(text, on) {
+  const el = $("live");
+  el.textContent = text;
+  el.classList.toggle("on", !!on);
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(proto + "//" + location.host + "/events");
+  ws.onopen = () => setLive("live", true);
+  ws.onclose = () => { setLive("disconnected — retrying", false); setTimeout(connect, 1500); };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "consent_required") { showGate(msg.disclosure); return; }
+    render(msg);
+  };
+}
+
+function showGate(disclosure) {
+  $("app").hidden = true;
+  $("gate").hidden = false;
+  renderDisclosure(disclosure, $("gate-disclosure"));
+}
+
+async function boot() {
+  const r = await fetch("/session");
+  if (r.status === 403) {
+    const body = await r.json();
+    showGate(body.disclosure);
+    return;
+  }
+  const state = await r.json();
+  $("gate").hidden = true;
+  $("app").hidden = false;
+  render(state);
+  connect();
+
+  $("questions").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-qid]");
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.action === "save-answer") saveAnswer(btn.dataset.qid);
+    else if (btn.dataset.action === "pick-up-to") startPick(btn.dataset.qid, Number(btn.dataset.askedAt));
+    else if (btn.dataset.to) transition(btn.dataset.qid, btn.dataset.to);
+  });
+  $("transcript").addEventListener("click", (e) => {
+    const b = e.target.closest("button.pick-line");
+    if (b && !b.disabled) pickLine(Number(b.dataset.t));
+  });
+  $("transcript").addEventListener("keydown", pickKeydown);
+  $("pick-bar").addEventListener("keydown", pickKeydown);
+  $("pick-cancel").addEventListener("click", () => endPick(true));
+  // Notes: send on blur (and Ctrl/Cmd+Enter) so a broadcast never fights the caret.
+  $("questions").addEventListener("blur", (e) => {
+    const ta = e.target.closest("textarea[data-notes-qid]");
+    if (ta) saveNotes(ta.dataset.notesQid, ta.value);
+  }, true);
+  $("questions").addEventListener("keydown", (e) => {
+    const ta = e.target.closest("textarea[data-notes-qid]");
+    if (ta && (e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); ta.blur(); }
+  });
+  $("proposals").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-qid]");
+    if (!btn) return;
+    if (btn.dataset.action === "confirm-proposal") confirmProposal(btn.dataset.qid);
+    else if (btn.dataset.action === "dismiss-proposal") dismissProposal(btn.dataset.qid);
+  });
+  $("live-start").addEventListener("click", () => startLive());
+  $("live-stop").addEventListener("click", () => stopLive(""));
+  $("analyse-copy").addEventListener("click", async () => {
+    const code = $("analyse-cmd");
+    const cmd = code.dataset.cmd || code.textContent;
+    const btn = $("analyse-copy");
+    const label = btn.textContent;
+    try {
+      await navigator.clipboard.writeText(cmd);   // loopback (localhost) is a secure context
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = label; }, 1200);
+    } catch (e) {
+      // clipboard blocked → select the command text so the interviewer can copy it by hand
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  });
+  window.addEventListener("beforeunload", () => { if (live.running) teardownLive(); });
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    $("live-start").disabled = true;
+    setLiveStatus("this browser cannot share tab audio — use post-hoc upload", true);
+  }
+  $("replay-btn").addEventListener("click", async () => {
+    $("replay-btn").disabled = true;
+    setLive("replaying…", true);
+    await fetch("/replay?delay=0.7", { method: "POST" });
+    setTimeout(() => { $("replay-btn").disabled = false; }, 1000);
+  });
+}
+
+boot();
+</script>
+</body>
+</html>
