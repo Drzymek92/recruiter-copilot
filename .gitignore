@@ -18,3 +18,6 @@ dist/
 .pytest_cache/
 .ruff_cache/
 .cache/
+
+# live-server lock (one serve per session folder)
+.serve.lock
