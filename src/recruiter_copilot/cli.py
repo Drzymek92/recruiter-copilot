@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import Settings, SettingsError, gpu_report, load_settings
+from .models import Profile
 from .session_lock import SessionLocked
 from .store import (
     BadSessionId,
@@ -91,6 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="prepared transcript to drive the demo (default: <session_dir>/replay.json)",
     )
+    p.add_argument(
+        "--info-pack-min-confidence",
+        dest="info_pack_min_confidence",
+        type=float,
+        default=None,
+        help="D26: below this IDF cosine a candidate question shows 'Not in your pack' "
+        "(default 0.36, measured by scripts/bench_info_pack.py; env INFO_PACK_MIN_CONFIDENCE)",
+    )
     _add_settings_flags(p)
 
     p = sub.add_parser("analyse", help="post-hoc: recording → transcript → report (M1/M2)")
@@ -114,6 +123,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     p.add_argument("--out", default=None, help="write transcript here instead of the session dir")
+    p.add_argument(
+        "--ollama-reset",
+        dest="ollama_reset_before_analyse",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="unload the local model first so the run starts from an empty prompt cache "
+        "(reproducible findings, #2006; default on, env OLLAMA_RESET_BEFORE_ANALYSE)",
+    )
+    p.add_argument(
+        "--reasoning-effort",
+        dest="ollama_reasoning_effort",
+        choices=["none", "low", "medium", "high"],
+        default=None,
+        help="send reasoning_effort to the local model ('none' = thinking off for qwen3, #2012); "
+        "omitted = the parameter is not sent (model default). Env OLLAMA_REASONING_EFFORT",
+    )
+    p.add_argument(
+        "--second-pass",
+        dest="analyse_second_pass",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="after an answer's first call finds a contradiction, re-ask once without the docs "
+        "it cites, so one conflict cannot mask another (#999; default off, env "
+        "ANALYSE_SECOND_PASS)",
+    )
     _add_settings_flags(p)
     return parser
 
@@ -127,6 +161,10 @@ _CLI_OVERRIDES = (
     "matcher_route",
     "host",
     "port",
+    "ollama_reset_before_analyse",
+    "ollama_reasoning_effort",
+    "analyse_second_pass",
+    "info_pack_min_confidence",  # D26
 )
 
 
@@ -313,13 +351,22 @@ def _write_report(session, lines, settings: Settings, folder: Path, out) -> dict
         f"analysing {len(lines)} transcript line(s) with {settings.chat_provider_name()} ...",
         file=out,
     )
+    if settings.profile is Profile.LOCAL and settings.ollama_reasoning_effort:
+        print(f"reasoning_effort={settings.ollama_reasoning_effort} (opt-in, #2012)", file=out)
+    if settings.analyse_second_pass:
+        print("second_pass=on (opt-in, #999)", file=out)
     chat = build_chat_provider(settings)
+    # #2006: temp-0 output depends on Ollama's prompt-cache state, so start every run cold.
+    reset = getattr(chat, "reset_prompt_cache", None)
+    if settings.profile is Profile.LOCAL and settings.ollama_reset_before_analyse and reset:
+        reset()
     analysis = analyse(
         session,
         lines,
         chat,
         matcher_route=settings.matcher_route,
         min_confidence=settings.matcher_min_confidence,
+        second_pass=settings.analyse_second_pass,
     )
     report = build_report(session, analysis, settings)
     paths = output_paths(folder, datetime.now())
@@ -336,6 +383,18 @@ def _write_report(session, lines, settings: Settings, folder: Path, out) -> dict
         f"data left machine={'yes' if settings.data_leaves_machine() else 'no'} (D18)",
         file=out,
     )
+    for r in analysis.rejected_contradictions:  # #1994: dropped as non-conflicts — say so
+        print(
+            f"  dropped non-conflict ({r.question_id}, rule={r.rule}): "
+            f"{r.contradiction.claim!r} vs {r.contradiction.source_doc}",
+            file=out,
+        )
+    for m in analysis.filtered_meta_lines:  # #1995: meta/tool talk withheld — say so
+        print(
+            f"  filtered meta line ({m.question_id or '-'}, rule={m.rule}) "
+            f"[{m.line.t_start:.2f}s]: {m.line.text!r}",
+            file=out,
+        )
     return paths
 
 

@@ -1,4 +1,4 @@
-"""Live capture plumbing (M4, D13/D22): browser PCM frames in, transcript lines out.
+"""Live capture plumbing (M4, D13/D22/D24): browser PCM frames in, transcript lines out.
 
 The browser (``static/cockpit.html``) captures the interviewer's microphone with ``getUserMedia``
 and the call tab's audio with ``getDisplayMedia``, resamples both to 16 kHz mono PCM16, and streams
@@ -19,7 +19,7 @@ the live transcript exactly as they do on replay.
 MOD split — everything above the websocket is pure and unit-tested with no server and no GPU:
 ``parse_role``, ``parse_hello``, ``FrameAccumulator``, ``RoleStream``, ``insert_line``.
 ``LiveCapture`` is the asyncio coordinator: it owns the per-role streams, a single decode queue and
-the STT worker (``asyncio.to_thread`` — STT is blocking, the event loop never is). The websocket
+the STT worker (``run_in_daemon_thread`` — STT is blocking, the event loop never is). The websocket
 endpoint itself lives in ``server.py``.
 """
 
@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import contextvars
 import json
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from .audio import BYTES_PER_SAMPLE, ChannelGate, Segment, VadSegmenter
 from .config import Settings
@@ -284,14 +286,66 @@ def live_view(
 
 
 OnLine = Callable[[TranscriptLine], Awaitable[None]]
+T = TypeVar("T")
+
+
+async def run_in_daemon_thread(
+    func: Callable[..., T],
+    *args: Any,
+    inflight: set[threading.Thread] | None = None,
+    name: str = "live-stt",
+) -> T:
+    """``asyncio.to_thread`` on a fresh **daemon** thread (#2028) — same result, same exceptions,
+    same contextvars, same cancellation (the awaiting task stops waiting; the call runs on).
+
+    Why not the default executor: at shutdown ``asyncio.run`` → ``shutdown_default_executor``
+    joins its workers (measured: a 20 s decode held exit — and the lock release in ``serve``'s
+    ``finally`` — for the whole 20 s), and ``concurrent.futures`` joins every
+    ``ThreadPoolExecutor`` worker again at interpreter exit, so a dedicated executor would not
+    help either. A daemon thread is joined by neither: once the loop is gone the process exits
+    and the call is abandoned. ``inflight`` (when given) holds the thread while it runs.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[T] = loop.create_future()
+    ctx = contextvars.copy_context()
+
+    def settle(result: Any, error: BaseException | None) -> None:
+        if future.done():  # the awaiting task was cancelled
+            return
+        if error is None:
+            future.set_result(result)
+        else:
+            future.set_exception(error)
+
+    def target() -> None:
+        result: Any = None
+        error: BaseException | None = None
+        try:
+            result = ctx.run(func, *args)
+        except BaseException as e:  # noqa: BLE001 — handed to the awaiting task, as to_thread does
+            error = e
+        finally:
+            if inflight is not None:
+                inflight.discard(threading.current_thread())
+        try:
+            loop.call_soon_threadsafe(settle, result, error)
+        except RuntimeError:  # loop closed: this call was abandoned at shutdown (#2028)
+            pass
+
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    if inflight is not None:
+        inflight.add(thread)
+    thread.start()
+    return await future
 
 
 class LiveCapture:
     """Per-role streams → one serialised decode queue → ``on_line`` for every transcript line.
 
     One worker, one queue: the local provider is one model on one GPU, so decodes are serialised
-    in arrival order; the blocking decode runs in ``asyncio.to_thread`` so the event loop (and
-    therefore ``/events`` broadcasts and every REST click) never stalls behind Whisper.
+    in arrival order; the blocking decode runs in ``run_in_daemon_thread`` so the event loop (and
+    therefore ``/events`` broadcasts and every REST click) never stalls behind Whisper — and a
+    decode still running at shutdown never holds the process (#2028).
     """
 
     def __init__(
@@ -315,12 +369,15 @@ class LiveCapture:
         self.on_line = on_line
         self.vad = vad
         self.provider: SttProvider | None = None
+        self._provider_load: asyncio.Future[SttProvider] | None = None  # #2032: the one load
         self.streams: dict[str, RoleStream] = {}
         self.queue: asyncio.Queue[Segment] = asyncio.Queue()
         self.worker: asyncio.Task | None = None
         self.started_at: float | None = None
         self.lines = 0
         self.decode_errors = 0
+        self._decoding = False  # #2027: a segment is taken off the queue and not yet task_done
+        self._inflight: set[threading.Thread] = set()  # #2028: STT calls (load/decode) running
         # #994: audio a role contributed BEFORE its stream was replaced by a later capture, so the
         # persisted per-role seconds/segments reflect every capture in this process, not just the
         # last one. ``open_stream`` folds the outgoing stream in here before it is replaced.
@@ -330,11 +387,33 @@ class LiveCapture:
     # -- lifecycle ---------------------------------------------------------------------------
 
     async def ensure_provider(self) -> SttProvider:
-        """Build the STT provider off the loop (a local model load can take seconds)."""
-        if self.provider is None:
-            self.provider = await asyncio.to_thread(self.provider_factory)
-            logger.info("live STT provider ready: %s", getattr(self.provider, "name", "?"))
-        return self.provider
+        """Build the STT provider off the loop (a local model load can take seconds).
+
+        #2032: single-flight — every caller during the first load awaits ONE shared load task
+        (two ``/audio`` roles opened together used to build the model twice). Each waiter awaits
+        it through ``asyncio.shield``, so cancelling one parked handler (e.g. at shutdown) never
+        cancels the load another role is waiting for. A failed load raises in every waiter and is
+        not cached: the next call starts a fresh load."""
+        if self.provider is not None:
+            return self.provider
+        if self._provider_load is None:
+            self._provider_load = asyncio.ensure_future(self._load_provider())
+            # retrieve the outcome even if every waiter was cancelled (no "never retrieved" noise)
+            self._provider_load.add_done_callback(
+                lambda t: None if t.cancelled() else t.exception()
+            )
+        return await asyncio.shield(self._provider_load)
+
+    async def _load_provider(self) -> SttProvider:
+        try:
+            provider = await run_in_daemon_thread(
+                self.provider_factory, inflight=self._inflight, name="live-stt-load"
+            )
+        finally:
+            self._provider_load = None  # success is cached in ``provider``; failure never is
+        self.provider = provider
+        logger.info("live STT provider ready: %s", getattr(provider, "name", "?"))
+        return provider
 
     def _ensure_worker(self) -> None:
         if self.worker is None or self.worker.done():
@@ -396,6 +475,43 @@ class LiveCapture:
         """Wait until every queued segment has been decoded (tests, and the smoke script)."""
         await self.queue.join()
 
+    async def drain_for(self, timeout: float) -> int:
+        """#2027: ``drain`` bounded by ``timeout`` seconds; returns how many segments were still
+        not decoded when it gave up (0 = the backlog emptied in time). Logs one WARNING then."""
+        if self.backlog == 0:
+            return 0
+        try:
+            await asyncio.wait_for(self.queue.join(), timeout=timeout)
+        except TimeoutError:
+            left = self.backlog
+            logger.warning(
+                "shutdown: %d live segment(s) not decoded within %.1f s — their speech is not "
+                "in the saved transcript",
+                left,
+                timeout,
+            )
+            return left
+        return 0
+
+    def abandon_in_flight(self) -> int:
+        """#2028: how many STT calls (provider load or decode) are still running; one WARNING then.
+
+        Called by the lifespan shutdown AFTER the transcript is persisted. The calls run on daemon
+        threads, so nothing waits for them: ``serve`` releases the lock and the process exits."""
+        left = len(self._inflight)
+        if left:
+            logger.warning(
+                "shutdown: abandoning %d in-flight STT call(s) — the process exits without "
+                "waiting for them (the transcript is already saved)",
+                left,
+            )
+        return left
+
+    @property
+    def backlog(self) -> int:
+        """Segments queued or being decoded right now (the in-flight one counts)."""
+        return self.queue.qsize() + (1 if self._decoding else 0)
+
     @property
     def active(self) -> bool:
         """True while at least one role socket is open."""
@@ -407,9 +523,15 @@ class LiveCapture:
         provider = await self.ensure_provider()
         while True:
             segment = await self.queue.get()
+            self._decoding = True
             try:
-                lines, _decoded = await asyncio.to_thread(
-                    transcribe_segments, [segment], provider, self.policy
+                lines, _decoded = await run_in_daemon_thread(
+                    transcribe_segments,
+                    [segment],
+                    provider,
+                    self.policy,
+                    inflight=self._inflight,
+                    name="live-stt-decode",
                 )
                 for line in lines:
                     self.lines += 1
@@ -418,6 +540,7 @@ class LiveCapture:
                 self.decode_errors += 1
                 logger.exception("live decode failed for segment %s", segment.index)
             finally:
+                self._decoding = False
                 self.queue.task_done()
 
     # -- view --------------------------------------------------------------------------------

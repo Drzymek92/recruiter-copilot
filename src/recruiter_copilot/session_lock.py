@@ -7,9 +7,10 @@ takes ``<session_dir>/.serve.lock`` before it binds and removes it on a clean sh
 
 Stdlib only, cross-platform (O1): the file is created with ``O_CREAT | O_EXCL`` — atomic on
 Linux, macOS and Windows — and records the owner's PID + host. A lock whose PID is no longer
-running on this host is **stale** (the owner crashed): it is taken over with one WARNING. A lock
-held by a live PID, or by another host (liveness cannot be checked), refuses with
-``SessionLocked``. The lock lives inside the session folder, so ``purge`` removes it (D18).
+running on this host is **stale** (the owner crashed): it is taken over with one WARNING. So is a
+lock naming THIS process's own PID that this process never took (#2025: a container restarted as
+PID 1 after a SIGKILL leaked the file). A lock held by a live PID, by this process itself (no
+re-entry), or by another host (liveness cannot be checked), refuses with ``SessionLocked``. The lock lives inside the session folder, so ``purge`` removes it (D18).
 """
 
 from __future__ import annotations
@@ -73,20 +74,34 @@ def read_lock(session_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else {}
 
 
-def _is_stale(owner: dict) -> bool:
+# #2025: the lock paths THIS process took via ``acquire`` (and has not released). A same-host lock
+# naming our own PID is ours only if it is in here; otherwise it was leaked by an earlier process
+# that happened to have the same PID (a container restarted as PID 1 after a SIGKILL) → stale.
+_HELD: set[str] = set()
+
+
+def _key(path: Path) -> str:
+    return str(Path(path).resolve())
+
+
+def _is_stale(owner: dict, path: Path) -> bool:
     try:
         pid = int(owner.get("pid", 0))
     except (TypeError, ValueError):
         pid = 0
     if owner.get("host") not in (None, socket.gethostname()):
         return False  # another machine's process (shared folder) — cannot check, assume live
+    if pid == os.getpid():
+        return _key(path) not in _HELD  # ours only if WE took it; never a silent re-entry
     return not pid_alive(pid)
 
 
 def acquire(session_dir: Path) -> Path:
     """Take the session folder's lock for this process, or raise ``SessionLocked``.
 
-    A stale lock (dead PID on this host, or an unreadable file) is replaced with one WARNING.
+    A stale lock (dead PID on this host, an unreadable file, or our OWN PID in a lock this process
+    never took — #2025) is replaced with one WARNING. A second ``acquire`` of a folder this process
+    already holds still raises ``SessionLocked``.
     """
     path = lock_path(session_dir)
     record = json.dumps(
@@ -103,19 +118,24 @@ def acquire(session_dir: Path) -> Path:
             owner = read_lock(session_dir)
             if owner is None:
                 continue  # released between our open and our read — retry
-            if not _is_stale(owner):
+            if not _is_stale(owner, path):
                 raise SessionLocked(
                     f"session {Path(session_dir).name!r} is already served by PID "
                     f"{owner.get('pid')} on {owner.get('host')} (since {owner.get('started_at')}) "
                     f"— stop that cockpit first. If it is certainly gone, delete {path}."
                 ) from None
+            own = str(owner.get("pid")) == str(os.getpid())
             logger.warning(
-                "taking over stale serve lock %s (PID %s is not running)", path, owner.get("pid")
+                "taking over stale serve lock %s (PID %s %s)",
+                path,
+                owner.get("pid"),
+                "is this process, which never took it" if own else "is not running",
             )
             path.unlink(missing_ok=True)
             continue
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(record)
+        _HELD.add(_key(path))
         return path
     raise SessionLocked(f"could not take the serve lock {path} (contended) — try again")
 
@@ -123,6 +143,7 @@ def acquire(session_dir: Path) -> Path:
 def release(session_dir: Path) -> bool:
     """Remove the lock if THIS process holds it; returns whether a lock file was removed."""
     owner = read_lock(session_dir)
+    _HELD.discard(_key(lock_path(session_dir)))
     if not owner or owner.get("pid") != os.getpid():
         return False
     lock_path(session_dir).unlink(missing_ok=True)

@@ -9,7 +9,8 @@ Layout::
             cv.md | .txt
             cover_letter.md | .txt
             previous_summary.md | .txt
-        live.db               # M3: transcript + question state (SQLite)
+            job_info.md | .txt  # optional recruiter info pack (D15 amendment, D26) → Job.info_pack
+        live.db              # M3: transcript + question state (SQLite)
         transcript.json|.txt  # M1 post-hoc run, or the live call saved on Live Stop (#988)
         report_*.md|.html     # M2: exports
         audio/                # only when KEEP_AUDIO=1
@@ -38,6 +39,9 @@ DOC_FIELDS: dict[str, tuple[str, str]] = {
     "cv": ("candidate", "cv"),
     "cover_letter": ("candidate", "cover_letter"),
     "previous_summary": ("candidate", "previous_summary"),
+    # D26: the recruiter's answers to candidate questions. Folded like the other docs; absent =
+    # the cockpit's candidate-question panel is off. Never read by the analysis or the report.
+    "job_info": ("job", "info_pack"),
 }
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -143,6 +147,7 @@ def bundle_summary(session: Session) -> dict[str, object]:
             "cover_letter": bool(session.candidate.cover_letter),
             "previous_summary": bool(session.candidate.previous_summary),
             "job_requirements": bool(session.job.raw_text),
+            "job_info": bool(session.job.info_pack),  # D26 info pack present → panel on
         },
         "languages": f"{session.languages.primary}+{session.languages.secondary or '-'}",
         "assess_language": session.languages.assess_language,

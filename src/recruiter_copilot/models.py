@@ -110,9 +110,17 @@ class Requirement:
 
 @dataclass
 class Job:
+    """``info_pack`` (D15 amendment 11-23, D26) is the recruiter's optional answer sheet for the
+    CANDIDATE's questions — ``docs/job_info.md``, split into sections by ``##`` heading
+    (``info_pack.split_sections``). Empty = the candidate-question feature is off. Optional and
+    additive, so an older ``session.json`` without the key loads unchanged and the schema stays v1.
+    It is never evidence about the candidate: the analysis and the report do not read it (D26).
+    """
+
     title: str
     requirements: list[Requirement] = field(default_factory=list)
     raw_text: str = ""
+    info_pack: str = ""
 
 
 @dataclass
@@ -241,6 +249,16 @@ class QuestionAnalysis:
     confidence: float = 0.0  # 0–1
     not_evidenced: bool = False
     interviewer_edit: str = ""  # SI2: the human's last word, shown above the model's text
+    # #2015: question ids of the earlier_answer:<qid> docs this question was compared against
+    # (answers whose span started EARLIER in the call, #2005), in call order. Ids only — never
+    # answer text. Empty for the first answer and for a question with no answer span; an older
+    # saved report without the key loads with the default.
+    compared_answers: list[str] = field(default_factory=list)
+    # #2026: the truncation signals (``ChatReply.truncation_signals``: "context",
+    # "chars_per_token") that fired on ANY model call made for this question (first call and the
+    # #999 second pass), first-seen order, deduped. Empty = no call was truncated; an older saved
+    # report without the key loads with the default.
+    truncation: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -302,6 +320,9 @@ class Report:
     fit: FitAssessment = field(default_factory=FitAssessment)
     language: LanguageAssessment | None = None
     interviewer_summary: str = ""  # SI2: free-text human conclusion, never generated
+    # #2007: rule → count of candidate lines the #1995 meta/tool-talk filter withheld from the
+    # analysis. Counts only — the report must not re-quote what was withheld.
+    withheld_meta_lines: dict[str, int] = field(default_factory=dict)
 
 
 # ── (de)serialisation ─────────────────────────────────────────────────────────────────────

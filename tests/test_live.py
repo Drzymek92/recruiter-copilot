@@ -26,6 +26,7 @@ from recruiter_copilot.live import (
     live_view,
     parse_hello,
     parse_role,
+    run_in_daemon_thread,
 )
 from recruiter_copilot.models import Speaker, TranscriptLine
 from recruiter_copilot.server import create_app
@@ -181,6 +182,135 @@ def test_insert_line_keeps_the_transcript_in_time_order():
     assert insert_line(transcript, line(20.0, Speaker.CANDIDATE)) == 3
     assert insert_line(transcript, line(5.0, Speaker.INTERVIEWER)) == 2  # stable on ties
     assert [ln.t_start for ln in transcript] == [0.0, 5.0, 5.0, 10.0, 20.0]
+
+
+def test_run_in_daemon_thread_matches_to_thread_but_on_a_daemon_thread():
+    """#2028: same result, same exception, contextvars carried — on a daemon thread that the
+    caller can track while it runs (so shutdown never joins it)."""
+    import asyncio
+    import contextvars
+    import threading
+
+    var: contextvars.ContextVar[str] = contextvars.ContextVar("var", default="unset")
+    inflight: set[threading.Thread] = set()
+    seen: dict[str, object] = {}
+
+    def work(x: int) -> int:
+        seen["daemon"] = threading.current_thread().daemon
+        seen["tracked"] = threading.current_thread() in inflight
+        seen["var"] = var.get()
+        return x * 2
+
+    def boom() -> None:
+        raise ValueError("bad decode")
+
+    async def main() -> None:
+        var.set("from-loop")
+        assert await run_in_daemon_thread(work, 21, inflight=inflight) == 42
+        with pytest.raises(ValueError, match="bad decode"):
+            await run_in_daemon_thread(boom, inflight=inflight)
+
+    asyncio.run(main())
+    assert seen == {"daemon": True, "tracked": True, "var": "from-loop"}
+    assert inflight == set()  # each thread untracks itself when its call returns
+
+
+class GatedFactory:
+    """#2032: a provider factory that counts its calls and blocks (on its daemon thread) until
+    the test opens the gate, so every caller is provably waiting on the SAME first load."""
+
+    def __init__(self, fail_first: bool = False) -> None:
+        import threading
+
+        self.calls = 0
+        self.fail_first = fail_first
+        self.gate = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self) -> StubStt:
+        with self._lock:
+            self.calls += 1
+            call = self.calls
+        assert self.gate.wait(timeout=5), "test never opened the load gate"
+        if self.fail_first and call == 1:
+            raise RuntimeError("synthetic model load failure")
+        return StubStt()
+
+
+def _capture(settings: Settings, session, factory) -> object:
+    from recruiter_copilot.live import LiveCapture
+
+    async def on_line(_line: TranscriptLine) -> None:
+        return None
+
+    return LiveCapture(settings, session, factory, on_line=on_line)
+
+
+async def _park_then_open(factory: GatedFactory, *awaitables) -> list:
+    """Start every waiter, let each reach its parked await, then let the load finish (bounded)."""
+    import asyncio
+
+    tasks = [asyncio.ensure_future(a) for a in awaitables]
+    await asyncio.sleep(0.05)  # every task runs to its first suspension point
+    factory.gate.set()
+    return await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+
+
+def test_concurrent_ensure_provider_loads_the_model_once(settings, demo_session):
+    """#2032: two ``/audio`` roles opened during the first load used to build the model twice."""
+    import asyncio
+
+    factory = GatedFactory()
+    live = _capture(settings, demo_session, factory)
+
+    async def main() -> list:
+        return await _park_then_open(factory, live.ensure_provider(), live.ensure_provider())
+
+    first, second = asyncio.run(main())
+    assert factory.calls == 1, f"the provider was built {factory.calls} times"
+    assert isinstance(first, StubStt) and first is second is live.provider
+
+
+def test_failed_provider_load_reaches_every_waiter_and_is_not_cached(settings, demo_session):
+    """#2032: a failed load is surfaced to ALL concurrent waiters; the next call loads again."""
+    import asyncio
+
+    factory = GatedFactory(fail_first=True)
+    live = _capture(settings, demo_session, factory)
+
+    async def main() -> tuple[list, object]:
+        results = await _park_then_open(factory, live.ensure_provider(), live.ensure_provider())
+        assert live.provider is None  # a failure is never cached as "the provider"
+        retried = await asyncio.wait_for(live.ensure_provider(), timeout=5)
+        return results, retried
+
+    results, retried = asyncio.run(main())
+    assert all(isinstance(r, RuntimeError) for r in results), results
+    assert all("synthetic model load failure" in str(r) for r in results)
+    assert factory.calls == 2  # one failed shared load + one retry — never one per waiter
+    assert isinstance(retried, StubStt) and retried is live.provider
+
+
+def test_cancelling_one_waiter_does_not_cancel_the_shared_load(settings, demo_session):
+    """#2032: shutdown cancelling ONE parked ``/audio`` handler must not abort the load (or the
+    result) another role is still waiting for."""
+    import asyncio
+
+    factory = GatedFactory()
+    live = _capture(settings, demo_session, factory)
+
+    async def main() -> object:
+        loser = asyncio.ensure_future(live.ensure_provider())
+        keeper = asyncio.ensure_future(live.ensure_provider())
+        await asyncio.sleep(0.05)
+        loser.cancel()
+        await asyncio.gather(loser, return_exceptions=True)
+        assert loser.cancelled()
+        factory.gate.set()
+        return await asyncio.wait_for(keeper, timeout=5)
+
+    provider = asyncio.run(main())
+    assert factory.calls == 1 and provider is live.provider
 
 
 def test_live_view_reports_roles_and_backlog(settings):

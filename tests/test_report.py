@@ -152,6 +152,32 @@ def test_language_block_only_when_present() -> None:
     assert LANGUAGE_DISCLAIMER in md  # the fixed disclaimer travels with the estimate
 
 
+def test_empty_cefr_estimate_renders_the_d17_deferral_text_not_a_dash() -> None:
+    """#2008 / D17 + OPEN_DESIGN G9: the CEFR estimate is DEFERRED, so an empty estimate must say
+    so explicitly in both renderings — a bare dash reads like a missing value, not a decision."""
+    from recruiter_copilot.report import CEFR_NOT_ESTIMATED, render_html, render_markdown
+
+    assert CEFR_NOT_ESTIMATED == "CEFR: not estimated (deferred — see D17)"
+    lang = LanguageAssessment(language="en")  # cefr_estimate left empty
+    md = render_markdown(_report(language=lang))
+    page = render_html(_report(language=lang))
+    for text in (md, page):
+        assert CEFR_NOT_ESTIMATED in text
+        assert "CEFR estimate:" not in text  # no dash placeholder line
+        assert LANGUAGE_DISCLAIMER in text
+
+
+def test_set_cefr_estimate_still_renders_the_value() -> None:
+    from recruiter_copilot.report import CEFR_NOT_ESTIMATED, render_html, render_markdown
+
+    lang = LanguageAssessment(language="en", cefr_estimate="B2")
+    md = render_markdown(_report(language=lang))
+    page = render_html(_report(language=lang))
+    assert "- CEFR estimate: **B2**" in md
+    assert "<li>CEFR estimate: <strong>B2</strong></li>" in page
+    assert CEFR_NOT_ESTIMATED not in md and CEFR_NOT_ESTIMATED not in page
+
+
 def test_markdown_carries_the_d18_disclosure_and_consent() -> None:
     from recruiter_copilot.report import render_markdown
 
@@ -207,7 +233,119 @@ def test_html_escapes_candidate_text() -> None:
     assert "&lt;b&gt;" in html and "&amp;" in html
 
 
-# ── assembly + output naming (pure) ────────────────────────────────────────────────────────────
+# ── #2007: withheld meta/tool-talk audit line (count + rule only, never the line text) ─────────
+
+WITHHELD_TEXT = "Zaraz, muszę sprawdzić, czy nagrywanie działa."  # synthetic
+
+
+def test_markdown_states_withheld_meta_line_count_and_rules_not_the_text() -> None:
+    from recruiter_copilot.report import render_markdown
+
+    rep = _report()
+    rep.withheld_meta_lines = {"tool_talk": 2, "latency_aside": 1}
+    md = render_markdown(rep)
+    assert (
+        "3 lines withheld as meta/tool talk (rules: latency_aside ×1, tool_talk ×2) "
+        "— not analysed." in md
+    )
+    assert WITHHELD_TEXT not in md
+
+
+def test_html_states_withheld_meta_line_count_and_rule_escaped() -> None:
+    from recruiter_copilot.report import render_html
+
+    rep = _report()
+    rep.withheld_meta_lines = {"<odd&rule>": 1}
+    html = render_html(rep)
+    assert (
+        "1 line withheld as meta/tool talk (rule: &lt;odd&amp;rule&gt; ×1) — not analysed." in html
+    )
+    assert "<odd&rule>" not in html
+
+
+def test_no_withheld_line_when_nothing_was_filtered() -> None:
+    from recruiter_copilot.report import render_html, render_markdown
+
+    rep = _report()
+    assert rep.withheld_meta_lines == {}
+    assert "withheld" not in render_markdown(rep)
+    assert "withheld" not in render_html(rep)
+
+
+def test_build_report_counts_filtered_meta_lines_by_rule_without_text() -> None:
+    from recruiter_copilot.analysis import AnalysisResult, FilteredLine
+    from recruiter_copilot.config import Settings
+    from recruiter_copilot.models import TranscriptLine
+    from recruiter_copilot.report import build_report, render_html, render_markdown
+
+    line = TranscriptLine(t_start=1.0, t_end=2.0, text=WITHHELD_TEXT, speaker=Speaker.CANDIDATE)
+    result = AnalysisResult(
+        filtered_meta_lines=[
+            FilteredLine(question_id="q1", rule="tool_talk", line=line),
+            FilteredLine(question_id="", rule="tool_talk", line=line),
+            FilteredLine(question_id="q2", rule="latency_aside", line=line),
+        ]
+    )
+    rep = build_report(_session(Consent()), result, Settings(), generated_at="t")
+    assert rep.withheld_meta_lines == {"tool_talk": 2, "latency_aside": 1}
+    for text in (render_markdown(rep), render_html(rep)):
+        assert "3 lines withheld" in text
+        assert WITHHELD_TEXT not in text
+
+
+# ── #2015: which earlier answers each question was compared against (ids only, no text) ──────
+
+EARLIER_ANSWER_TEXT = "Odpowiedź na trzecie pytanie."  # synthetic
+
+
+def test_markdown_lists_the_earlier_answers_each_question_was_compared_with() -> None:
+    from recruiter_copilot.report import render_markdown
+
+    rep = _report()
+    rep.analyses[0].compared_answers = ["q3", "q1"]  # call order, not bank order
+    md = render_markdown(rep)
+    q2_block = md.split("### q2", 1)[1].split("### q3", 1)[0]
+    assert "Compared with earlier answers: q3, q1" in q2_block
+    assert md.count("Compared with earlier answers") == 1  # the bare q3 shows nothing
+    assert EARLIER_ANSWER_TEXT not in md
+
+
+def test_html_lists_the_earlier_answers_each_question_was_compared_with_escaped() -> None:
+    from recruiter_copilot.report import render_html
+
+    rep = _report()
+    rep.analyses[0].compared_answers = ["q3", "<q&1>"]
+    html = render_html(rep)
+    assert "<p>Compared with earlier answers: q3, &lt;q&amp;1&gt;</p>" in html
+    assert "<q&1>" not in html
+    assert html.count("Compared with earlier answers") == 1
+    assert EARLIER_ANSWER_TEXT not in html
+
+
+def test_no_compared_line_when_a_question_was_compared_with_no_earlier_answer() -> None:
+    from recruiter_copilot.report import render_html, render_markdown
+
+    rep = _report()
+    assert all(qa.compared_answers == [] for qa in rep.analyses)
+    assert "Compared with earlier answers" not in render_markdown(rep)
+    assert "Compared with earlier answers" not in render_html(rep)
+
+
+def test_a_report_saved_before_2015_still_loads_with_no_compared_answers() -> None:
+    import json
+
+    from recruiter_copilot.models import dumps, loads, to_dict
+
+    old = to_dict(_report())
+    for qa in old["analyses"]:
+        qa.pop("compared_answers", None)  # the pre-#2015 on-disk shape
+    rep = loads(Report, json.dumps(old))
+    assert [qa.compared_answers for qa in rep.analyses] == [[], []]
+    assert rep.analyses[0].contradictions[0].source_quote == SOURCE_QUOTE
+    assert json.loads(dumps(rep))["analyses"][0]["compared_answers"] == []
+
+
+# ── assembly + output naming (pure)────────────────────────────────────────────────────────────
 
 
 def _session(consent: Consent) -> Session:

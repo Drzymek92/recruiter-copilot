@@ -348,13 +348,14 @@ def _fake_run_once(calls: list, per_run: list) -> object:
     Ollama and NO GPU. Indexing ``per_run`` by call count makes an unexpected extra call IndexError.
     """
 
-    def _fake(model, transcript_kind, prompt, stt_dir=ev.DEFAULT_STT_DIR):
+    def _fake(model, transcript_kind, prompt, stt_dir=ev.DEFAULT_STT_DIR, cold=True):
         idx = len(calls)
         calls.append((model, transcript_kind, prompt))
         return per_run[idx], {
             "model": model,
             "transcript": transcript_kind,
             "prompt": prompt,
+            "cache": ev.cache_mode(cold),
             "seconds": 1.0,
         }
 
@@ -373,7 +374,8 @@ def test_checkpoint_streams_each_finished_run(tmp_path):
     recs = [json.loads(ln) for ln in ckpt.read_text().splitlines() if ln.strip()]
     assert [r["run_index"] for r in recs] == [0, 1, 2]
     assert all(
-        r["params"] == {"model": "m", "transcript": "ground_truth", "prompt": "default"}
+        r["params"]
+        == {"model": "m", "transcript": "ground_truth", "prompt": "default", "cache": "cold"}
         for r in recs
     )
 
@@ -495,6 +497,417 @@ def test_default_checkpoint_path_is_config_specific(tmp_path):
     assert p1 != p2 and p1 != p3
     assert p1.suffix == ".jsonl"
     assert "qwen3-14b" in p1.name  # ':' is slugified out of the filename
+
+
+# ── cold-cache eval runs (#2011, pure — fake provider + fake analyser, no Ollama/GPU) ──────────
+
+
+class _FakeResettableProvider:
+    """Stands in for ``OllamaProvider``: records every cache reset into a shared event log."""
+
+    name = "fake"
+    model_name = "fake-model"
+
+    def __init__(self, events: list) -> None:
+        self._events = events
+
+    def reset_prompt_cache(self) -> bool:
+        self._events.append("reset")
+        return True
+
+    def complete(self, prompt, system=None, max_tokens=None):  # pragma: no cover — never reached
+        raise AssertionError("the fake analyser must not call the model")
+
+
+@pytest.fixture
+def fake_live(monkeypatch):
+    """Patch the live seams of the eval (provider + analyser) and return the shared event log."""
+    from types import SimpleNamespace
+
+    from recruiter_copilot.analysis import AnalysisResult
+
+    events: list = []
+    monkeypatch.setattr(ev, "build_provider", lambda model, **_kw: _FakeResettableProvider(events))
+
+    def _fake_analyse(session, lines, provider, **_kw):
+        events.append("analyse")
+        return AnalysisResult()
+
+    def _fake_analyse_question(question, lines, docs, provider, lang, rejected=None):
+        events.append("analyse_question")
+        return SimpleNamespace(contradictions=[])
+
+    monkeypatch.setattr(ev, "analyse", _fake_analyse)
+    monkeypatch.setattr(ev, "analyse_question", _fake_analyse_question)
+    return events
+
+
+def test_eval_resets_cache_once_per_run_by_default(fake_live):
+    agg, metas = ev.run_eval_multi("m", "ground_truth", "default", 3)
+    assert agg.n_runs == 3
+    # Exactly one reset per run, each immediately BEFORE that run's analyse batch.
+    assert fake_live == ["reset", "analyse"] * 3
+    assert all(m["cache"] == "cold" and m["cache_reset"] is True for m in metas)
+
+
+def test_eval_warm_mode_never_resets(fake_live):
+    _agg, metas = ev.run_eval_multi("m", "ground_truth", "default", 2, cold=False)
+    assert fake_live == ["analyse", "analyse"]
+    assert all(m["cache"] == "warm" and m["cache_reset"] is None for m in metas)
+
+
+def test_single_run_eval_is_cold_by_default(fake_live):
+    out = ev.run_eval("m", "ground_truth", "default")
+    assert fake_live == ["reset", "analyse"]
+    assert out["cache"] == "cold"
+
+
+def test_live_negatives_reset_once_before_the_batch_and_respect_warm(fake_live):
+    ev.run_negatives_live("m", "default")
+    n = len(ev.NEGATIVE_CASES)
+    assert fake_live == ["reset"] + ["analyse_question"] * n
+    fake_live.clear()
+    ev.run_negatives_live("m", "default", cold=False)
+    assert fake_live == ["analyse_question"] * n
+
+
+# ── #2012: reasoning_effort arm + cost counters (offline) ──────────────────────────────────────
+
+
+def test_sweep_params_unchanged_when_reasoning_effort_unset():
+    """Existing thinking-on checkpoints must still resume: the unset key is exactly pre-#2012."""
+    assert ev.sweep_params("m", "ground_truth", "default") == {
+        "model": "m",
+        "transcript": "ground_truth",
+        "prompt": "default",
+        "cache": "cold",
+    }
+    off = ev.sweep_params("m", "ground_truth", "default", reasoning_effort="none")
+    assert off["reasoning_effort"] == "none"
+
+
+def test_checkpoint_from_the_other_thinking_arm_is_rejected(tmp_path):
+    ckpt = tmp_path / "ckpt.jsonl"
+    ev.run_eval_multi(
+        "m",
+        "ground_truth",
+        "default",
+        1,
+        checkpoint=ckpt,
+        run_once=_fake_run_once([], [_evalscore({A})]),
+    )
+    with pytest.raises(ev.CheckpointMismatch):
+        ev.run_eval_multi(
+            "m",
+            "ground_truth",
+            "default",
+            1,
+            checkpoint=ckpt,
+            run_once=_fake_run_once([], [_evalscore({A})]),
+            reasoning_effort="none",
+        )
+
+
+def test_default_checkpoint_path_unchanged_unset_and_distinct_when_set():
+    base = ev.default_checkpoint_path("qwen3:14b", "ground_truth", "default")
+    assert base.name == "eval_ckpt_qwen3-14b-ground-truth-default-cold.jsonl"
+    off = ev.default_checkpoint_path(
+        "qwen3:14b", "ground_truth", "default", reasoning_effort="none"
+    )
+    assert off != base and "re-none" in off.name
+
+
+def test_run_eval_multi_passes_reasoning_effort_to_each_run_only_when_set():
+    seen: list = []
+
+    def run_once(model, transcript_kind, prompt, stt_dir=None, cold=True, **kw):
+        seen.append(kw)
+        return _evalscore({A}), {
+            "model": model,
+            "transcript": transcript_kind,
+            "prompt": prompt,
+            "seconds": 1.0,
+        }
+
+    ev.run_eval_multi("m", "ground_truth", "default", 1, run_once=run_once)
+    ev.run_eval_multi("m", "ground_truth", "default", 1, run_once=run_once, reasoning_effort="none")
+    assert seen == [{}, {"reasoning_effort": "none"}]
+
+
+# ── #999: second-pass arm (offline) ─────────────────────────────────────────────────────────────
+
+
+def test_second_pass_arm_keys_checkpoint_only_when_on():
+    base = ev.sweep_params("m", "ground_truth", "default")
+    assert "second_pass" not in base  # pre-#999 checkpoints still resume
+    assert ev.sweep_params("m", "ground_truth", "default", second_pass=True) == {
+        **base,
+        "second_pass": True,
+    }
+    off_path = ev.default_checkpoint_path("qwen3:14b", "ground_truth", "default")
+    on_path = ev.default_checkpoint_path("qwen3:14b", "ground_truth", "default", second_pass=True)
+    assert off_path.name == "eval_ckpt_qwen3-14b-ground-truth-default-cold.jsonl"
+    assert on_path != off_path and "second-pass" in on_path.name
+
+
+def test_checkpoint_from_the_single_pass_arm_is_rejected_by_the_second_pass_arm(tmp_path):
+    ckpt = tmp_path / "ckpt.jsonl"
+    ev.run_eval_multi(
+        "m",
+        "ground_truth",
+        "default",
+        1,
+        checkpoint=ckpt,
+        run_once=_fake_run_once([], [_evalscore({A})]),
+    )
+    with pytest.raises(ev.CheckpointMismatch):
+        ev.run_eval_multi(
+            "m",
+            "ground_truth",
+            "default",
+            1,
+            checkpoint=ckpt,
+            run_once=_fake_run_once([], [_evalscore({A})]),
+            second_pass=True,
+        )
+
+
+def test_run_eval_multi_passes_second_pass_only_when_on():
+    seen: list = []
+
+    def run_once(model, transcript_kind, prompt, stt_dir=None, cold=True, **kw):
+        seen.append(kw)
+        return _evalscore({A}), {"model": model, "transcript": transcript_kind, "prompt": prompt}
+
+    ev.run_eval_multi("m", "ground_truth", "default", 1, run_once=run_once)
+    ev.run_eval_multi("m", "ground_truth", "default", 1, run_once=run_once, second_pass=True)
+    assert seen == [{}, {"second_pass": True}]
+
+
+def test_build_provider_wires_reasoning_effort_and_leaves_default_unset():
+    assert ev.build_provider("qwen3:14b").reasoning_effort == ""
+    assert ev.build_provider("qwen3:14b", reasoning_effort="none").reasoning_effort == "none"
+
+
+def test_eval_run_records_reasoning_effort_and_routes_it_to_the_provider(fake_live, monkeypatch):
+    efforts: list = []
+    inner = ev.build_provider  # the fixture's fake
+
+    def build(model, **kw):
+        efforts.append(kw.get("reasoning_effort", ""))
+        return inner(model, **kw)
+
+    monkeypatch.setattr(ev, "build_provider", build)
+    _agg, metas = ev.run_eval_multi("m", "ground_truth", "default", 1, reasoning_effort="none")
+    assert efforts == ["none"]
+    assert metas[0]["reasoning_effort"] == "none"
+    assert metas[0]["calls"] == 0 and metas[0]["parse_failures"] == 0
+
+
+def test_wrapper_counts_output_tokens_and_parse_failures():
+    class _Inner:
+        name = "fake"
+        model_name = "fake"
+
+        def __init__(self):
+            self.replies = [
+                ev.ChatReply('{"summary": "ok"}', "m", "p", output_tokens=700),
+                ev.ChatReply("not json at all", "m", "p", output_tokens=50),
+            ]
+
+        def complete(self, prompt, system=None, max_tokens=None):
+            return self.replies.pop(0)
+
+    w = ev._SystemOverrideProvider(_Inner(), "SYS")
+    w.complete("a")
+    w.complete("b")
+    assert w.output_tokens == [700, 50]
+    assert w.parse_failures == 1
+    stats = ev._token_stats(w)
+    assert stats == {
+        "calls": 2,
+        "output_tokens_total": 750,
+        "output_tokens_mean": 375.0,
+        "output_tokens_max": 700,
+        "parse_failures": 1,
+    }
+
+
+def test_wrapper_counts_think_blocks_and_strips_them_via_the_production_function():
+    """#2020: the strip moved to analysis.py; the wrapper's counter + cleaned text still work."""
+
+    class _Inner:
+        name = "fake"
+        model_name = "fake"
+
+        def __init__(self):
+            self.replies = [
+                ev.ChatReply('<think>{"bogus": 1}</think>{"summary": "ok"}', "m", "p"),
+                ev.ChatReply('{"summary": "plain"}', "m", "p"),
+            ]
+
+        def complete(self, prompt, system=None, max_tokens=None):
+            return self.replies.pop(0)
+
+    w = ev._SystemOverrideProvider(_Inner(), "SYS")
+    assert w.complete("a").text == '{"summary": "ok"}'
+    assert w.complete("b").text == '{"summary": "plain"}'
+    assert w.think_blocks_seen == 1
+    assert w.parse_failures == 0
+
+
+def test_aggregate_cost_and_identical_runs():
+    metas = [
+        {
+            "calls": 6,
+            "output_tokens_total": 600,
+            "output_tokens_max": 150,
+            "parse_failures": 0,
+            "no_answer_summaries": 1,
+            "findings_signature": "x",
+        },
+        {
+            "calls": 6,
+            "output_tokens_total": 1200,
+            "output_tokens_max": 400,
+            "parse_failures": 2,
+            "findings_signature": "x",
+        },
+    ]
+    cost = ev.aggregate_cost(metas)
+    assert cost["calls"] == 12 and cost["output_tokens_per_call_mean"] == 150.0
+    assert cost["output_tokens_per_call_max"] == 400 and cost["parse_failures"] == 2
+    assert cost["no_answer_summaries"] == 1
+    assert ev.identical_runs(metas) is True
+    metas[1]["findings_signature"] = "y"
+    assert ev.identical_runs(metas) is False
+    assert ev.identical_runs([{}]) is None
+    assert ev.aggregate_cost([{"seconds": 1}]) is None
+
+
+def test_findings_signature_is_order_independent_and_content_sensitive():
+    f1 = {"source_doc": "cv", "claim": "two years", "transcript_quote": "q1"}
+    f2 = {"source_doc": "cover_letter", "claim": "timeline", "transcript_quote": "q2"}
+    a = ev.EvalScore(total_findings=2, matched_seeds=[], missed_seeds=[], per_finding=[f1, f2])
+    b = ev.EvalScore(total_findings=2, matched_seeds=[], missed_seeds=[], per_finding=[f2, f1])
+    c = ev.EvalScore(total_findings=1, matched_seeds=[], missed_seeds=[], per_finding=[f1])
+    assert ev.findings_signature(a) == ev.findings_signature(b)
+    assert ev.findings_signature(a) != ev.findings_signature(c)
+
+
+def test_sweep_params_carry_the_cache_mode():
+    assert ev.sweep_params("m", "ground_truth", "default")["cache"] == "cold"
+    assert ev.sweep_params("m", "ground_truth", "default", cold=False)["cache"] == "warm"
+
+
+def test_default_checkpoint_path_separates_cold_and_warm():
+    cold = ev.default_checkpoint_path("qwen3:14b", "ground_truth", "default")
+    warm = ev.default_checkpoint_path("qwen3:14b", "ground_truth", "default", cold=False)
+    assert cold != warm and "cold" in cold.name and "warm" in warm.name
+
+
+def test_checkpoint_from_the_other_cache_mode_is_rejected(tmp_path):
+    ckpt = tmp_path / "ck.jsonl"
+    ev.run_eval_multi(
+        "m",
+        "ground_truth",
+        "default",
+        2,
+        checkpoint=ckpt,
+        cold=False,
+        run_once=_fake_run_once([], [_evalscore({A}), _evalscore({A})]),
+    )
+    calls: list = []
+    with pytest.raises(ev.CheckpointMismatch) as exc:
+        ev.run_eval_multi(
+            "m",
+            "ground_truth",
+            "default",
+            2,
+            checkpoint=ckpt,  # cold (default) must refuse to resume a warm sweep
+            run_once=_fake_run_once(calls, [_evalscore({A}), _evalscore({A})]),
+        )
+    assert calls == []
+    assert "cache='warm'" in str(exc.value) and "cache='cold'" in str(exc.value)
+
+
+def test_pre_2011_checkpoint_without_cache_mode_is_rejected(tmp_path):
+    ckpt = tmp_path / "ck.jsonl"
+    legacy = {"model": "m", "transcript": "ground_truth", "prompt": "default"}  # no "cache" key
+    ev.append_checkpoint(ckpt, 0, legacy, _evalscore({A}), {"seconds": 1.0})
+    with pytest.raises(ev.CheckpointMismatch):
+        ev.load_checkpoint(ckpt, ev.sweep_params("m", "ground_truth", "default"))
+
+
+# ── #1994 known negative cases + the paired filter ablation (pure, offline) ────────────────────
+
+
+def test_negative_cases_ground_and_are_rejected_by_their_rule():
+    """Each canned false finding passes D17 (so it is the FILTER that catches it) and is then
+    rejected by the expected rule — i.e. the bench would count it as an FP if it were reported."""
+    rows = ev.check_negatives_offline()
+    assert [r["key"] for r in rows] == [c.key for c in ev.NEGATIVE_CASES]
+    assert {r["key"] for r in rows} == {"omission_test_set_size", "aspiration_vs_no_experience"}
+    for r in rows:
+        assert r["grounded"], r
+        assert r["rejected_by"] == r["expected_rule"], r
+        assert r["fp"] is False
+
+
+def test_negative_cases_do_not_match_any_seed():
+    """A negative-case finding must never be scored as a caught seed (it is an FP by construction)."""
+    from recruiter_copilot.analysis import verify_contradiction
+
+    for case in ev.NEGATIVE_CASES:
+        c = verify_contradiction(case.finding, ev.negative_case_lines(case), case.docs)
+        assert c is not None
+        sc = ev.score([c])
+        assert sc.false_positive_findings == 1 and sc.matched_seeds == []
+
+
+def test_filter_ablation_scores_the_same_run_with_the_filter_off():
+    from recruiter_copilot.analysis import RejectedContradiction
+
+    tp = _contradiction(
+        "cv", "Says two years", "the CV shows the first LLM project in 2025", "od dwóch lat"
+    )
+    fp = _contradiction("earlier_answer:q4", "Cloud deployment experience", "nie mam", "zdobycie")
+    out = ev.filter_ablation([tp], [RejectedContradiction("q5", "aspiration_vs_no_experience", fp)])
+    assert out["unfiltered"]["false_positive_findings"] == 1
+    assert out["unfiltered"]["precision"] == 0.5
+    assert out["unfiltered"]["matched_seeds"] == ["cv_two_years"]
+    assert out["filter_rejected"] == [
+        {
+            "rule": "aspiration_vs_no_experience",
+            "question_id": "q5",
+            "source_doc": "earlier_answer:q4",
+            "claim": "Cloud deployment experience",
+            "was_seed": False,
+        }
+    ]
+
+
+def test_aggregate_ablation_handles_pre_1994_runs_and_counts_rules():
+    assert ev.aggregate_ablation([{"model": "m"}]) is None
+    metas = [
+        {
+            "unfiltered": {"recall": 0.667, "precision": 0.5, "false_positive_findings": 2},
+            "filter_rejected": [{"rule": "omission", "was_seed": False}],
+        },
+        {
+            "unfiltered": {"recall": 0.333, "precision": None, "false_positive_findings": 0},
+            "filter_rejected": [],
+        },
+    ]
+    agg = ev.aggregate_ablation(metas)
+    assert agg == {
+        "runs": 2,
+        "unfiltered_mean_recall": 0.5,
+        "unfiltered_mean_precision": 0.5,
+        "unfiltered_mean_false_positives": 1.0,
+        "rejected_by_rule": {"omission": 1},
+        "rejected_seeds": 0,
+    }
 
 
 # ── live model path (guarded) ─────────────────────────────────────────────────────────────────

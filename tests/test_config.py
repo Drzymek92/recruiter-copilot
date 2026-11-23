@@ -36,6 +36,59 @@ def test_precedence_cli_over_env_over_file_over_default(tmp_path: Path) -> None:
     assert s.stt_device == "auto"  # default
 
 
+def test_ollama_reasoning_effort_defaults_unset_and_follows_cfg_precedence(tmp_path: Path) -> None:
+    """#2012: thinking control is opt-in — unset by default; CLI > env > file > default."""
+    assert load_settings(environ={}).ollama_reasoning_effort == ""
+    env_file = tmp_path / ".env"
+    env_file.write_text("OLLAMA_REASONING_EFFORT=high\n")
+    assert load_settings(env_file=env_file, environ={}).ollama_reasoning_effort == "high"
+    environ = {"OLLAMA_REASONING_EFFORT": "NONE"}  # normalised to lower case
+    assert load_settings(env_file=env_file, environ=environ).ollama_reasoning_effort == "none"
+    s = load_settings(
+        overrides={"ollama_reasoning_effort": "low"}, env_file=env_file, environ=environ
+    )
+    assert s.ollama_reasoning_effort == "low"
+
+
+def test_ollama_context_tokens_defaults_to_the_measured_load_and_follows_cfg_precedence(
+    tmp_path: Path,
+) -> None:
+    """#2014: the window the context truncation signal compares against; CLI > env > file >
+    default (4096 = qwen3:14b's measured load on Ollama 0.40.2)."""
+    assert load_settings(environ={}).ollama_context_tokens == 4096
+    env_file = tmp_path / ".env"
+    env_file.write_text("OLLAMA_CONTEXT_TOKENS=8192\n")
+    assert load_settings(env_file=env_file, environ={}).ollama_context_tokens == 8192
+    environ = {"OLLAMA_CONTEXT_TOKENS": "16384"}
+    assert load_settings(env_file=env_file, environ=environ).ollama_context_tokens == 16384
+    s = load_settings(overrides={"ollama_context_tokens": 2048}, env_file=env_file, environ=environ)
+    assert s.ollama_context_tokens == 2048
+
+
+def test_ollama_context_tokens_rejects_negative_values() -> None:
+    with pytest.raises(SettingsError, match="OLLAMA_CONTEXT_TOKENS"):
+        load_settings(environ={"OLLAMA_CONTEXT_TOKENS": "-1"})
+
+
+def test_ollama_reasoning_effort_rejects_unknown_values() -> None:
+    with pytest.raises(SettingsError, match="OLLAMA_REASONING_EFFORT"):
+        load_settings(environ={"OLLAMA_REASONING_EFFORT": "off"})
+
+
+def test_ollama_reset_before_analyse_defaults_on_and_follows_cfg_precedence(tmp_path: Path) -> None:
+    """#2006: a fresh prompt cache per analyse is the default; CLI > env > file > default."""
+    assert load_settings(environ={}).ollama_reset_before_analyse is True
+    env_file = tmp_path / ".env"
+    env_file.write_text("OLLAMA_RESET_BEFORE_ANALYSE=0\n")
+    assert load_settings(env_file=env_file, environ={}).ollama_reset_before_analyse is False
+    environ = {"OLLAMA_RESET_BEFORE_ANALYSE": "1"}
+    assert load_settings(env_file=env_file, environ=environ).ollama_reset_before_analyse is True
+    s = load_settings(
+        overrides={"ollama_reset_before_analyse": False}, env_file=env_file, environ=environ
+    )
+    assert s.ollama_reset_before_analyse is False
+
+
 def test_analyser_default_is_the_precision_anchor() -> None:
     """D23: the shipped analyser default is qwen3:14b, named by DEFAULT_ANALYSER_MODEL."""
     assert config.DEFAULT_ANALYSER_MODEL == "qwen3:14b"

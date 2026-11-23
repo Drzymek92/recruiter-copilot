@@ -4,115 +4,307 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>recruiter-copilot cockpit</title>
-<style>
-  /* D14: no CDN, no webfont, no build step — everything inline. Loopback only. */
-  :root {
-    color-scheme: light dark;
-    --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #5c6370;
-    --line: #d9dde3; --accent: #2b5ce6; --accent-ink: #ffffff;
-    --pending: #6b7280; --asked: #b45309; --answered: #15803d; --skipped: #9ca3af;
-    --chip-bg: #eef1f6; --focus: #2b5ce6; --warn-bg: #fff4e5; --warn-ink: #7a4b00;
-    --interviewer: #2b5ce6; --candidate: #7c3aed;
+<script>
+// #2022 display prefs (font, theme, text size, column split): UI only, this browser only — never
+// session data. Applied here in <head>, before first paint, so a pinned theme never flashes.
+// Browser storage may be blocked (private window, site policy): every access is guarded and the
+// page then runs on the defaults, with changes lasting until the next reload.
+"use strict";
+window.cockpitPrefs = (function () {
+  const KEY = "recruiter-copilot.cockpit.prefs";
+  const CHOICES = {
+    font: ["sans", "serif", "mono"],
+    theme: ["system", "light", "dark", "contrast"],
+    size: ["s", "m", "l", "xl"],
+  };
+  const DEFAULTS = { font: "sans", theme: "system", size: "m", split: 52.4 };  // 52.4 = old 1.1fr/1fr
+  const SPLIT_MIN = 25, SPLIT_MAX = 75;
+  let storageOk = true;
+  function clampSplit(v) {
+    v = Number(v);
+    if (!Number.isFinite(v)) return DEFAULTS.split;
+    return Math.round(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)) * 10) / 10;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a; --panel: #1c1f26; --ink: #e8eaed; --muted: #9aa2ad;
-      --line: #2c313a; --accent: #6b8cff; --accent-ink: #0b0d10;
-      --pending: #9aa2ad; --asked: #f0a338; --answered: #4ade80; --skipped: #6b7280;
-      --chip-bg: #262b34; --focus: #6b8cff; --warn-bg: #3a2c12; --warn-ink: #f0c983;
-      --interviewer: #6b8cff; --candidate: #b794f6;
+  function clean(raw) {
+    const p = Object.assign({}, DEFAULTS);
+    if (raw && typeof raw === "object") {
+      Object.keys(CHOICES).forEach((k) => { if (CHOICES[k].includes(raw[k])) p[k] = raw[k]; });
+      if (raw.split != null) p.split = clampSplit(raw.split);
+    }
+    return p;
+  }
+  function load() {
+    try {
+      return clean(JSON.parse(window.localStorage.getItem(KEY) || "{}"));
+    } catch (e) {
+      storageOk = false;                       // blocked or unreadable → defaults
+      return clean(null);
     }
   }
+  function save(p) {
+    try {
+      window.localStorage.setItem(KEY, JSON.stringify(p));
+      storageOk = true;
+    } catch (e) {
+      storageOk = false;                       // blocked → the change holds until reload
+    }
+  }
+  function apply(p) {
+    const root = document.documentElement;
+    root.setAttribute("data-font", p.font);
+    root.setAttribute("data-theme", p.theme);
+    root.setAttribute("data-size", p.size);
+    root.style.setProperty("--split", String(p.split));
+  }
+  let state = load();
+  apply(state);
+  return {
+    CHOICES, DEFAULTS, SPLIT_MIN, SPLIT_MAX, clampSplit,
+    get: () => Object.assign({}, state),
+    set(patch) { state = clean(Object.assign({}, state, patch)); apply(state); save(state); return state; },
+    reset() {
+      state = clean(null);
+      apply(state);
+      try {
+        window.localStorage.removeItem(KEY);
+        storageOk = true;
+      } catch (e) {
+        storageOk = false;
+      }
+      return state;
+    },
+    storageOk: () => storageOk,
+  };
+})();
+</script>
+<style>
+  /* D14: no CDN, no webfont, no build step — everything inline. Loopback only. Fonts are local
+     system stacks. Text sizes are rem off one root value (Settings → Text size); spacing stays px. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f3f5f8; --panel: #ffffff; --ink: #161a21; --muted: #566070;
+    --line: #dfe3e9; --line-strong: #c6cdd8;
+    --accent: #2c50c4; --accent-strong: #2343a8; --accent-soft: #e9eefc; --accent-ink: #ffffff;
+    --pending: #4f5a6b; --asked: #9a4a05; --answered: #15703a; --skipped: #6c7480;
+    --asked-soft: #fdf4e8;
+    --chip-bg: #eef1f5; --focus: #2c50c4; --warn-bg: #fff4e2; --warn-ink: #76470a;
+    --interviewer: #2c50c4; --candidate: #6d32d6;
+    --shadow: 0 1px 2px rgb(22 30 45 / .05), 0 2px 8px rgb(22 30 45 / .04);
+    --stack-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial,
+      sans-serif;
+    --stack-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, "Iowan Old Style", Georgia,
+      "DejaVu Serif", serif;
+    --stack-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas,
+      "DejaVu Sans Mono", "Liberation Mono", monospace;
+    --font-ui: var(--stack-sans);
+    --fs-2xs: .6875rem; --fs-xs: .75rem; --fs-sm: .8125rem; --fs-base: .9375rem; --fs-lg: 1.0625rem;
+    --gutter: 16px;
+  }
+  /* Theme: a pinned choice (data-theme) beats the OS setting; "system" follows it. */
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111419; --panel: #191d24; --ink: #e5e8ed; --muted: #9ba4b1;
+    --line: #2b313b; --line-strong: #3a414d;
+    --accent: #8ca5ff; --accent-strong: #a9bcff; --accent-soft: #1f2840; --accent-ink: #0b0e14;
+    --pending: #aab3c0; --asked: #f0a64a; --answered: #5fd18b; --skipped: #8b94a1;
+    --asked-soft: #2a2115;
+    --chip-bg: #222730; --focus: #8ca5ff; --warn-bg: #33270f; --warn-ink: #f1cd8c;
+    --interviewer: #8ca5ff; --candidate: #c3a2ff;
+    --shadow: 0 1px 2px rgb(0 0 0 / .3), 0 2px 8px rgb(0 0 0 / .2);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]):not([data-theme="contrast"]) {
+      color-scheme: dark;
+      --bg: #111419; --panel: #191d24; --ink: #e5e8ed; --muted: #9ba4b1;
+      --line: #2b313b; --line-strong: #3a414d;
+      --accent: #8ca5ff; --accent-strong: #a9bcff; --accent-soft: #1f2840; --accent-ink: #0b0e14;
+      --pending: #aab3c0; --asked: #f0a64a; --answered: #5fd18b; --skipped: #8b94a1;
+      --asked-soft: #2a2115;
+      --chip-bg: #222730; --focus: #8ca5ff; --warn-bg: #33270f; --warn-ink: #f1cd8c;
+      --interviewer: #8ca5ff; --candidate: #c3a2ff;
+      --shadow: 0 1px 2px rgb(0 0 0 / .3), 0 2px 8px rgb(0 0 0 / .2);
+    }
+  }
+  :root[data-theme="contrast"] {
+    color-scheme: light;
+    --bg: #ffffff; --panel: #ffffff; --ink: #000000; --muted: #30363f;
+    --line: #59616d; --line-strong: #59616d;
+    --accent: #1537a8; --accent-strong: #0f2a85; --accent-soft: #e3e9fb; --accent-ink: #ffffff;
+    --pending: #30363f; --asked: #6e3300; --answered: #0a5426; --skipped: #4a515c;
+    --asked-soft: #fff1dc;
+    --chip-bg: #edf0f4; --focus: #1537a8; --warn-bg: #fff0d1; --warn-ink: #4f2f00;
+    --interviewer: #1537a8; --candidate: #521aa8;
+    --shadow: none;
+  }
+  :root[data-font="serif"] { --font-ui: var(--stack-serif); }
+  :root[data-font="mono"] { --font-ui: var(--stack-mono); }
+  :root[data-size="s"] { font-size: 93.75%; }
+  :root[data-size="l"] { font-size: 112.5%; }
+  :root[data-size="xl"] { font-size: 125%; }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: var(--fs-base)/1.5 var(--font-ui);
   }
   header {
-    padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
-    display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline;
+    padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center;
   }
-  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
-  .sub { color: var(--muted); font-size: 13px; }
+  header h1 {
+    font-size: var(--fs-lg); margin: 0; font-weight: 650; letter-spacing: -.005em;
+    min-width: 0; text-wrap: balance;
+  }
+  .sub { color: var(--muted); font-size: var(--fs-sm); }
   .disclosure {
-    width: 100%; margin-top: 6px; font-size: 12.5px; color: var(--muted);
+    width: 100%; margin: 0; font-size: var(--fs-xs); color: var(--muted);
   }
   .disclosure strong { color: var(--ink); }
   .egress {
-    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 10px;
-    background: var(--chip-bg); font-size: 11.5px;
+    display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+    background: var(--chip-bg); font-size: var(--fs-2xs);
   }
   .egress.out { background: var(--warn-bg); color: var(--warn-ink); }
-  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px; }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  /* #2022 two columns split by a draggable separator; --split = question-bank width, % of the row */
+  main {
+    display: grid; column-gap: 0; padding: 16px 20px;
+    grid-template-columns:
+      minmax(0, calc((100% - var(--gutter)) * var(--split, 52.4) / 100)) var(--gutter) minmax(0, 1fr);
+  }
+  #split {
+    position: relative; cursor: col-resize; touch-action: none; border-radius: 6px;
+    outline-offset: -2px;
+  }
+  #split::before { content: ""; position: absolute; inset: 0 -4px; }   /* 24px hit area */
+  #split::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
+    border-radius: 1px; background: var(--accent); opacity: 0; transition: opacity .15s ease-out;
+  }
+  #split .grip {
+    position: sticky; top: calc(50vh - 20px); display: block; width: 4px; height: 40px;
+    margin: 24px auto 0; border-radius: 2px; background: var(--line-strong);
+  }
+  #split:hover::after, #split:focus-visible::after, #split.dragging::after { opacity: .6; }
+  #split:hover .grip, #split:focus-visible .grip, #split.dragging .grip { background: var(--accent); }
+  body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+  @media (prefers-reduced-motion: reduce) { #split::after, button { transition: none; } }
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; row-gap: 16px; padding: 12px; }
+    #split { display: none; }
+    header { padding: 10px 12px; }
+    #questions .q textarea { font-size: 1rem; }   /* ≥16px: iOS does not zoom on focus */
+  }
   section {
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    box-shadow: var(--shadow);
   }
   section > h2 {
-    font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
-    margin: 0 0 10px; font-weight: 600;
+    font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    margin: 0 0 10px; font-weight: 650;
   }
+  section > h2 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: var(--fs-xs); }
+  #tracker-h { padding-top: 12px; border-top: 1px solid var(--line); }
   .counts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; padding: 0; list-style: none; }
   .counts li {
-    font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--chip-bg);
-    border-left: 3px solid var(--pending);
+    display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs);
+    padding: 2px 10px 2px 8px; border-radius: 999px; background: var(--chip-bg);
+    font-variant-numeric: tabular-nums;
   }
-  .counts li.asked { border-left-color: var(--asked); }
-  .counts li.answered { border-left-color: var(--answered); }
-  .counts li.skipped { border-left-color: var(--skipped); }
-  ol.questions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-  .q { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; border-left: 4px solid var(--pending); }
-  .q[data-state="asked"] { border-left-color: var(--asked); }
+  .counts li::before {
+    content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--pending);
+  }
+  .counts li.asked::before { background: var(--asked); }
+  .counts li.answered::before { background: var(--answered); }
+  .counts li.skipped::before { background: none; box-shadow: inset 0 0 0 1.5px var(--skipped); }
+  ol.questions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  /* the state rail: a coloured left edge per question, backed by the text badge (never colour-only) */
+  .q {
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 10px 13px;
+    border-left: 3px solid var(--pending); background: var(--panel);
+  }
+  .q[data-state="asked"] { border-left-color: var(--asked); background: var(--asked-soft); }
   .q[data-state="answered"] { border-left-color: var(--answered); }
-  .q[data-state="skipped"] { border-left-color: var(--skipped); opacity: .82; }
+  .q[data-state="skipped"] { border-left-color: var(--skipped); border-left-style: dashed; }
+  .q[data-state="skipped"] .text { color: var(--muted); }
   .q .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-  .q .qid { font-variant: small-caps; color: var(--muted); font-size: 12px; letter-spacing: .03em; }
-  .q .state-badge { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+  .q .qid { font-variant: small-caps; color: var(--muted); font-size: var(--fs-xs); letter-spacing: .03em; }
+  .q .state-badge { font-size: var(--fs-2xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
   .q[data-state="pending"] .state-badge { color: var(--pending); }
   .q[data-state="asked"] .state-badge { color: var(--asked); }
   .q[data-state="answered"] .state-badge { color: var(--answered); }
   .q[data-state="skipped"] .state-badge { color: var(--skipped); }
-  .q .text { margin: 5px 0 4px; }
-  .q .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .q .text { margin: 4px 0 3px; overflow-wrap: anywhere; }
+  .q .meta { color: var(--muted); font-size: var(--fs-xs); margin: 0 0 8px; overflow-wrap: anywhere; }
   .q .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .q .answers { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .q .answers li { font-size: 12.5px; background: var(--chip-bg); border-radius: 7px; padding: 6px 9px; border-left: 3px solid var(--answered); }
-  .q .answers .span-meta { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
-  .q .notes-wrap { margin-top: 8px; }
-  .q .notes-wrap label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
-  .q textarea {
-    width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 7px;
-    border: 1px solid var(--line); background: var(--bg); color: var(--ink); resize: vertical; min-height: 40px;
+  .q .answers li {
+    font-size: var(--fs-sm); background: var(--chip-bg); border-radius: 6px; padding: 6px 9px;
+    border-left: 2px solid var(--answered); overflow-wrap: anywhere;
   }
-  .q .saved-flag { font-size: 11px; color: var(--answered); margin-left: 4px; }
+  .q .answers .span-meta { color: var(--muted); font-size: var(--fs-2xs); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
+  .q .notes-wrap { margin-top: 8px; }
+  .q .notes-wrap label { display: block; font-size: var(--fs-2xs); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
+  .q textarea {
+    width: 100%; font: inherit; font-size: var(--fs-sm); padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--line-strong); background: var(--bg); color: var(--ink); resize: vertical; min-height: 40px;
+  }
+  .q .saved-flag { font-size: var(--fs-2xs); color: var(--answered); margin-left: 4px; }
   /* proposals (D16 — shown, applied only on a click) */
   #proposals { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  #proposals:empty::after { content: "No pending suggestions."; color: var(--muted); font-style: italic; font-size: 13px; }
-  .proposal { border: 1px solid var(--asked); border-radius: 9px; padding: 9px 11px; background: var(--warn-bg); }
+  #proposals:empty::after { content: "No pending suggestions."; color: var(--muted); font-style: italic; font-size: var(--fs-sm); }
+  .proposal { border: 1px solid var(--asked); border-radius: 8px; padding: 9px 11px; background: var(--warn-bg); }
   .proposal .p-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-  .proposal .p-qid { font-variant: small-caps; font-size: 12px; letter-spacing: .03em; }
-  .proposal .p-conf { font-size: 11px; color: var(--muted); }
-  .proposal .p-evidence { font-size: 12.5px; margin: 4px 0 8px; color: var(--ink); }
-  .proposal .p-actions { display: flex; gap: 6px; }
+  .proposal .p-qid { font-variant: small-caps; font-size: var(--fs-xs); letter-spacing: .03em; }
+  .proposal .p-conf { font-size: var(--fs-2xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .proposal .p-evidence { font-size: var(--fs-sm); margin: 4px 0 8px; color: var(--ink); overflow-wrap: anywhere; }
+  .proposal .p-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* D26 candidate questions: the recruiter's info pack, shown verbatim; no click moves a question.
+     Calm by design: no animation, no colour-only signal, theme tokens only. */
+  #pack-h { padding-top: 12px; border-top: 1px solid var(--line); }
+  #pack-answers { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #pack-answers[hidden], #pack-h[hidden] { display: none; }
+  #pack-answers:empty::after { content: "No candidate questions yet."; color: var(--muted); font-style: italic; font-size: var(--fs-sm); }
+  .pack-item { border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 9px 11px; background: var(--accent-soft); }
+  .pack-item.none { border-left: 3px dashed var(--muted); background: var(--chip-bg); }
+  .pack-item .pk-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .pack-item .pk-label { font-size: var(--fs-2xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .pack-item .pk-stamp { font-size: var(--fs-2xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pack-item .pk-q { margin: 3px 0 6px; font-style: italic; overflow-wrap: anywhere; }
+  .pack-item .pk-heading { margin: 0 0 2px; font-weight: 650; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+  .pack-item .pk-body { margin: 0 0 8px; font: inherit; font-size: var(--fs-sm); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+  .pack-item .pk-none { margin: 0 0 8px; font-weight: 650; font-size: var(--fs-sm); color: var(--ink); }
   button {
-    font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
-    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    font: inherit; font-size: var(--fs-sm); line-height: 1.3; padding: 4px 11px; min-height: 28px;
+    border-radius: 6px; cursor: pointer; touch-action: manipulation;
+    border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink);
+    transition: background-color .12s ease-out, border-color .12s ease-out;
   }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+  @media (pointer: coarse) { button, .seg label { min-height: 44px; } }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-  #transcript { max-height: 62vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
-  .line { padding: 6px 10px; border-radius: 8px; background: var(--chip-bg); }
-  .line .who { font-weight: 600; font-size: 12px; }
+  #transcript {
+    max-height: 62vh; overflow-y: auto; overscroll-behavior: contain; display: flex;
+    flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none;
+  }
+  .line {
+    padding: 6px 10px; border-radius: 6px; background: var(--chip-bg);
+    border-left: 2px solid transparent; overflow-wrap: anywhere;
+  }
+  .line.interviewer { border-left-color: var(--interviewer); }
+  .line.candidate { border-left-color: var(--candidate); }
+  .line .who { font-weight: 650; font-size: var(--fs-xs); }
   .line.interviewer .who { color: var(--interviewer); }
   .line.candidate .who { color: var(--candidate); }
-  .line .stamp { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .line .stamp { color: var(--muted); font-size: var(--fs-2xs); margin-left: 6px; font-variant-numeric: tabular-nums; }
   .line .body { margin-top: 2px; display: block; }
   .empty { color: var(--muted); font-style: italic; }
   /* #984 up-to picker: while picking, every eligible transcript line is a button — "save up to here" */
   .pick-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 8px; padding: 6px 10px;
-              border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); font-size: 12.5px; }
+              border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); font-size: var(--fs-sm); }
   .pick-bar[hidden] { display: none; }
   .pick-bar button { flex: none; }
   #transcript.picking .line { padding: 0; }
@@ -124,18 +316,61 @@
   #gate { max-width: 620px; margin: 8vh auto; padding: 28px 30px; background: var(--panel);
           border: 1px solid var(--line); border-radius: 12px; }
   #gate h2 { margin-top: 0; }
-  #gate .disc { margin: 14px 0; padding: 12px 14px; background: var(--chip-bg); border-radius: 8px; font-size: 13px; }
-  .toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-  .live { font-size: 12px; color: var(--muted); }
+  #gate .disc { margin: 14px 0; padding: 12px 14px; background: var(--chip-bg); border-radius: 8px; font-size: var(--fs-sm); }
+  .toolbar { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .live {
+    font-size: var(--fs-xs); color: var(--muted); padding: 2px 10px 2px 8px; border-radius: 999px;
+    background: var(--chip-bg);
+  }
   .live::before { content: "\25CF"; margin-right: 5px; color: var(--skipped); }
   .live.on::before { color: var(--answered); }
+  .icon-btn { display: inline-flex; align-items: center; gap: 6px; }
+  .icon-btn svg { flex: none; }
+  /* #2022 Settings: native modal <dialog> (focus trapped, Esc closes, focus returns to the gear) */
+  #settings {
+    width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+    overscroll-behavior: contain; padding: 0; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--panel); color: var(--ink);
+    box-shadow: 0 12px 32px rgb(0 0 0 / .18), 0 2px 6px rgb(0 0 0 / .08);
+  }
+  #settings::backdrop { background: rgb(12 15 20 / .42); }
+  #settings h2 { margin: 0; padding: 16px 18px 0; font-size: var(--fs-base); font-weight: 650; }
+  .dlg-body { padding: 0 18px; }
+  .pref { border: 0; margin: 14px 0 0; padding: 0; min-width: 0; }
+  .pref legend {
+    padding: 0; margin-bottom: 6px; font-size: var(--fs-2xs); text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); font-weight: 650;
+  }
+  .seg { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+  .seg label {
+    display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 10px; cursor: pointer;
+    border: 1px solid var(--line-strong); border-radius: 8px; font-size: var(--fs-sm);
+  }
+  .seg label:hover { border-color: var(--accent); }
+  .seg label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .seg input { margin: 0; flex: none; accent-color: var(--accent); }
+  .ff-sans { font-family: var(--stack-sans); }
+  .ff-serif { font-family: var(--stack-serif); }
+  .ff-mono { font-family: var(--stack-mono); }
+  .sw {
+    flex: none; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line-strong);
+  }
+  .sw-system { background: linear-gradient(135deg, #f3f5f8 50%, #191d24 50%); }
+  .sw-light { background: #f3f5f8; }
+  .sw-dark { background: #191d24; }
+  .sw-contrast { background: linear-gradient(135deg, #ffffff 50%, #000000 50%); }
+  .dlg-note { margin: 14px 0 0; font-size: var(--fs-xs); color: var(--muted); }
+  .dlg-foot {
+    display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    margin-top: 16px; padding: 12px 18px 16px; border-top: 1px solid var(--line);
+  }
   /* live capture panel (M4, D13) — browser mic + call tab → ws:/audio, one socket per role */
   #live-panel { margin-bottom: 16px; }
   .live-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
-  .live-controls .status { font-size: 12.5px; color: var(--muted); }
-  .live-controls .status.err { color: var(--warn-ink); background: var(--warn-bg); padding: 1px 8px; border-radius: 10px; }
+  .live-controls .status { font-size: var(--fs-sm); color: var(--muted); }
+  .live-controls .status.err { color: var(--warn-ink); background: var(--warn-bg); padding: 1px 8px; border-radius: 999px; }
   .roles { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .role { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 9px; border-radius: 8px; background: var(--chip-bg); }
+  .role { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: var(--fs-sm); padding: 5px 9px; border-radius: 6px; background: var(--chip-bg); }
   .role .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--skipped); align-self: center; flex: none; }
   .role[data-state="connecting"] .dot { background: var(--asked); }
   .role[data-state="on"] .dot { background: var(--answered); }
@@ -144,8 +379,8 @@
   .role.interviewer .who { color: var(--interviewer); }
   .role.candidate .who { color: var(--candidate); }
   .role .src { color: var(--muted); }
-  .role .role-meta { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .note { font-size: 12.5px; margin: 6px 0 0; color: var(--ink); }
+  .role .role-meta { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+  .note { font-size: var(--fs-sm); margin: 6px 0 0; color: var(--ink); }
   .note.sub { color: var(--muted); }
   /* #995: after Live Stop persists transcript.json, the copyable analyse command for the session */
   #live-saved { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -155,10 +390,15 @@
   .analyse-cmd code {
     flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap;
     background: var(--chip-bg); padding: 6px 9px; border-radius: 7px;
-    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12.5px;
+    font-family: var(--stack-mono); font-size: var(--fs-sm);
   }
   .analyse-cmd button { flex: none; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  /* the skip link shows itself when a keyboard user lands on it */
+  a.visually-hidden:focus-visible {
+    top: 8px; left: 8px; z-index: 10; width: auto; height: auto; clip: auto; padding: 6px 12px;
+    border-radius: 6px; background: var(--panel); color: var(--accent); box-shadow: var(--shadow);
+  }
 </style>
 </head>
 <body>
@@ -179,20 +419,31 @@
     <div class="toolbar">
       <span class="live" id="live" aria-live="polite">connecting&hellip;</span>
       <button id="replay-btn" type="button">Replay demo</button>
+      <button id="settings-btn" type="button" class="icon-btn" aria-haspopup="dialog" aria-controls="settings"><svg
+          viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"><g fill="none"
+          stroke="currentColor"><circle cx="10" cy="10" r="7.2" stroke-width="2.6" stroke-dasharray="2.83 2.83"/><circle
+          cx="10" cy="10" r="4.45" stroke-width="3.7"/></g></svg>Settings</button>
     </div>
     <p class="disclosure" id="disclosure" aria-live="polite"></p>
   </header>
 
   <main>
-    <section aria-labelledby="tracker-h">
+    <section id="bank-panel" aria-labelledby="tracker-h">
       <h2 id="proposals-h">Suggestions <span class="sub">(matcher proposes; you confirm)</span></h2>
       <ul id="proposals" aria-labelledby="proposals-h" aria-live="polite"></ul>
+      <h2 id="pack-h" hidden>Candidate asked <span class="sub">(your info pack, verbatim; D26)</span></h2>
+      <ul id="pack-answers" aria-labelledby="pack-h" aria-live="polite" hidden></ul>
       <h2 id="tracker-h">Question bank</h2>
       <ul class="counts" id="counts" aria-label="Question state counts"></ul>
       <ol class="questions" id="questions"></ol>
     </section>
 
-    <div>
+    <div id="split" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="bank-panel"
+         aria-label="Resize the question bank and transcript columns" aria-valuemin="25"
+         aria-valuemax="75" aria-valuenow="52" title="Drag to resize · double-click to reset"><span
+         class="grip" aria-hidden="true"></span></div>
+
+    <div id="side-panel">
       <section id="live-panel" aria-labelledby="live-h">
         <h2 id="live-h">Live capture <span class="sub">(mic + call tab &rarr; this machine only)</span></h2>
         <div class="live-controls">
@@ -246,6 +497,47 @@
   </main>
 </div>
 
+<dialog id="settings" aria-labelledby="settings-h">
+  <form method="dialog" id="settings-form">
+    <h2 id="settings-h">Display settings</h2>
+    <div class="dlg-body">
+      <fieldset class="pref">
+        <legend>Font</legend>
+        <div class="seg">
+          <label class="ff-sans"><input type="radio" name="font" value="sans">Sans</label>
+          <label class="ff-serif"><input type="radio" name="font" value="serif">Serif</label>
+          <label class="ff-mono"><input type="radio" name="font" value="mono">Mono</label>
+        </div>
+      </fieldset>
+      <fieldset class="pref">
+        <legend>Theme</legend>
+        <div class="seg">
+          <label><input type="radio" name="theme" value="system"><span class="sw sw-system" aria-hidden="true"></span>System</label>
+          <label><input type="radio" name="theme" value="light"><span class="sw sw-light" aria-hidden="true"></span>Light</label>
+          <label><input type="radio" name="theme" value="dark"><span class="sw sw-dark" aria-hidden="true"></span>Dark</label>
+          <label><input type="radio" name="theme" value="contrast"><span class="sw sw-contrast" aria-hidden="true"></span>High contrast</label>
+        </div>
+      </fieldset>
+      <fieldset class="pref">
+        <legend>Text size</legend>
+        <div class="seg">
+          <label><input type="radio" name="size" value="s">Small</label>
+          <label><input type="radio" name="size" value="m">Default</label>
+          <label><input type="radio" name="size" value="l">Large</label>
+          <label><input type="radio" name="size" value="xl">Larger</label>
+        </div>
+      </fieldset>
+      <p class="dlg-note">Columns: drag the divider between them, or focus it and use the left and
+        right arrow keys (Shift for bigger steps), Home or End; Enter or a double-click resets.</p>
+      <p class="dlg-note" id="settings-storage"></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" id="settings-reset">Reset to defaults</button>
+      <button type="submit" class="primary">Done</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -277,7 +569,7 @@ function renderCounts(counts) {
 function stateButtons(q) {
   return STATES.filter((s) => s !== q.state).map((s) => {
     const on = q.allowed.includes(s);
-    return '<button type="button" data-qid="' + q.id + '" data-to="' + s + '"' +
+    return '<button type="button" data-qid="' + escapeHtml(q.id) + '" data-to="' + s + '"' +
       (on ? '' : ' disabled') + '>mark ' + s + '</button>';
   }).join("");
 }
@@ -288,7 +580,7 @@ function answerSpans(q) {
     '<li><div class="span-meta">' + fmtStamp(s.t_start) + '&ndash;' + fmtStamp(s.t_end) +
     (s.saved_at ? ' &middot; saved ' + escapeHtml(s.saved_at) : '') + '</div>' +
     '<div class="span-text">' + escapeHtml(s.text) + '</div></li>').join("");
-  return '<ul class="answers" aria-label="Saved answers for ' + q.id + '">' + items + '</ul>';
+  return '<ul class="answers" aria-label="Saved answers for ' + escapeHtml(q.id) + '">' + items + '</ul>';
 }
 
 function saveAnswerControl(q) {
@@ -299,24 +591,24 @@ function saveAnswerControl(q) {
   const flag = n ? '<span class="saved-flag">' + n + ' saved</span>' : '';
   // Save answer: asked-mark → the next question's asked-mark, or now (server decides, #984).
   // Save up to…: the interviewer picks the last line of the answer in the transcript.
-  return '<button type="button" class="primary" data-action="save-answer" data-qid="' + q.id +
+  return '<button type="button" class="primary" data-action="save-answer" data-qid="' + escapeHtml(q.id) +
     '">Save answer</button>' +
-    '<button type="button" data-action="pick-up-to" data-qid="' + q.id + '" data-asked-at="' +
+    '<button type="button" data-action="pick-up-to" data-qid="' + escapeHtml(q.id) + '" data-asked-at="' +
     q.asked_at + '">Save up to&hellip;</button>' + flag;
 }
 
 function notesControl(q) {
-  return '<div class="notes-wrap"><label for="notes-' + q.id + '">Notes</label>' +
-    '<textarea id="notes-' + q.id + '" data-notes-qid="' + q.id + '" rows="2" ' +
+  return '<div class="notes-wrap"><label for="notes-' + escapeHtml(q.id) + '">Notes</label>' +
+    '<textarea id="notes-' + escapeHtml(q.id) + '" data-notes-qid="' + escapeHtml(q.id) + '" rows="2" ' +
     'placeholder="Interviewer notes…">' + escapeHtml(q.notes || '') + '</textarea></div>';
 }
 
 function renderQuestions(questions) {
   $("questions").innerHTML = questions.map((q) => {
     const lang = q.assesses_language ? ' &middot; language check' : '';
-    const reqs = q.requirement_ids.length ? ' &middot; ' + q.requirement_ids.join(", ") : '';
+    const reqs = q.requirement_ids.length ? ' &middot; ' + escapeHtml(q.requirement_ids.join(", ")) : '';
     return '<li class="q" data-state="' + q.state + '">' +
-      '<div class="top"><span class="qid">' + q.id + '</span>' +
+      '<div class="top"><span class="qid">' + escapeHtml(q.id) + '</span>' +
       '<span class="state-badge">' + q.state + '</span></div>' +
       '<p class="text">' + escapeHtml(q.text) + '</p>' +
       '<p class="meta">' + escapeHtml(q.intent) + reqs + lang + '</p>' +
@@ -335,9 +627,33 @@ function renderProposals(proposals) {
       '<p class="p-evidence">' + escapeHtml(p.evidence) + '</p>' +
       '<div class="p-actions">' +
       '<button type="button" class="primary" data-action="confirm-proposal" data-qid="' +
-      p.question_id + '">Confirm &mdash; mark asked</button>' +
-      '<button type="button" data-action="dismiss-proposal" data-qid="' + p.question_id +
+      escapeHtml(p.question_id) + '">Confirm &mdash; mark asked</button>' +
+      '<button type="button" data-action="dismiss-proposal" data-qid="' + escapeHtml(p.question_id) +
       '">Dismiss</button></div></li>';
+  }).join("");
+}
+
+// D26: candidate questions answered from the recruiter's info pack — the section verbatim, or
+// "Not in your pack". state.pack === null → the bundle has no pack → no panel at all. Re-rendered
+// only when the answers change, so a broadcast neither re-announces nor steals focus.
+let lastPackSig = null;
+function renderPack(pack) {
+  const on = pack != null;
+  $("pack-h").hidden = !on;
+  $("pack-answers").hidden = !on;
+  if (!on) { lastPackSig = null; $("pack-answers").innerHTML = ""; return; }
+  const sig = JSON.stringify(pack.answers || []);
+  if (sig === lastPackSig) return;
+  lastPackSig = sig;
+  $("pack-answers").innerHTML = (pack.answers || []).map((a) => {
+    const answer = a.found
+      ? '<p class="pk-heading">' + escapeHtml(a.heading) + '</p><p class="pk-body">' + escapeHtml(a.body) + '</p>'
+      : '<p class="pk-none">Not in your pack</p>';
+    return '<li class="pack-item' + (a.found ? ' found' : ' none') + '">' +
+      '<div class="pk-top"><span class="pk-label">Candidate asked</span><span class="pk-stamp">' +
+      fmtStamp(a.t_start) + '</span></div>' +
+      '<p class="pk-q">' + escapeHtml(a.question) + '</p>' + answer +
+      '<button type="button" data-action="dismiss-pack" data-key="' + escapeHtml(a.key) + '">Dismiss</button></li>';
   }).join("");
 }
 
@@ -375,7 +691,7 @@ function renderTranscript(lines) {
       lineHtml(l) + '</button></li>';
   }).join("");
   if (focusedT != null) {
-    const again = el.querySelector('.pick-line[data-t="' + focusedT + '"]');
+    const again = el.querySelector('.pick-line[data-t="' + CSS.escape(focusedT) + '"]');
     if (again) again.focus();
   } else if (!picking) {
     el.scrollTop = el.scrollHeight;
@@ -405,7 +721,7 @@ function endPick(returnFocus) {
   $("pick-status").textContent = "";
   renderTranscript(lastTranscript);
   if (returnFocus && qid) {
-    const btn = document.querySelector('button[data-action="pick-up-to"][data-qid="' + qid + '"]');
+    const btn = document.querySelector('button[data-action="pick-up-to"][data-qid="' + CSS.escape(qid) + '"]');
     if (btn) btn.focus();
   }
 }
@@ -453,13 +769,13 @@ function restoreNotesFocus(saved) {
   if (!saved) return;
   if (saved.value == null) {
     const sel = saved.action
-      ? 'button[data-action="' + saved.action + '"][data-qid="' + saved.qid + '"]'
-      : 'button[data-to="' + saved.to + '"][data-qid="' + saved.qid + '"]';
+      ? 'button[data-action="' + CSS.escape(saved.action) + '"][data-qid="' + CSS.escape(saved.qid) + '"]'
+      : 'button[data-to="' + CSS.escape(saved.to) + '"][data-qid="' + CSS.escape(saved.qid) + '"]';
     const btn = document.querySelector("#questions " + sel);
     if (btn && !btn.disabled) btn.focus();
     return;
   }
-  const el = document.querySelector('textarea[data-notes-qid="' + saved.qid + '"]');
+  const el = document.querySelector('textarea[data-notes-qid="' + CSS.escape(saved.qid) + '"]');
   if (!el) return;
   el.value = saved.value;
   el.focus();
@@ -475,13 +791,14 @@ function render(state) {
   renderCounts(state.counts);
   const savedFocus = captureNotesFocus();
   renderProposals(state.proposals);
+  renderPack(state.pack);
   renderQuestions(state.questions);
   restoreNotesFocus(savedFocus);
   renderTranscript(state.transcript);
   renderLive(state.live);
 }
 
-// ── Live capture (M4, D13): mic + call-tab audio → 16 kHz PCM16 → ws:/audio, one socket per role ──
+// ── Live capture (M4, D13/D24; saves + Stop per D25): mic + call-tab audio → 16 kHz PCM16 → ws:/audio, one socket per role ──
 const TARGET_RATE = 16000;
 const CHUNK_SAMPLES = 1600;              // 100 ms per websocket message
 const LIVE_ROLES = ["interviewer", "candidate"];
@@ -746,6 +1063,7 @@ function saveNotes(qid, notes) {
 }
 function confirmProposal(qid) { return postJson("/proposals/" + encodeURIComponent(qid) + "/confirm", {}); }
 function dismissProposal(qid) { return postJson("/proposals/" + encodeURIComponent(qid) + "/dismiss", {}); }
+function dismissPack(key) { return postJson("/pack/" + encodeURIComponent(key) + "/dismiss", {}); }
 
 function setLive(text, on) {
   const el = $("live");
@@ -813,6 +1131,10 @@ async function boot() {
     if (btn.dataset.action === "confirm-proposal") confirmProposal(btn.dataset.qid);
     else if (btn.dataset.action === "dismiss-proposal") dismissProposal(btn.dataset.qid);
   });
+  $("pack-answers").addEventListener("click", (e) => {   // D26: dismiss only — no state change
+    const btn = e.target.closest('button[data-action="dismiss-pack"]');
+    if (btn) dismissPack(btn.dataset.key);
+  });
   $("live-start").addEventListener("click", () => startLive());
   $("live-stop").addEventListener("click", () => stopLive(""));
   $("analyse-copy").addEventListener("click", async () => {
@@ -846,6 +1168,105 @@ async function boot() {
   });
 }
 
+// ── #2022 resizable split: the separator drives --split (question-bank width, % of the row) ─────
+// Pointer: drag (pointer capture, saved on release). Keyboard: ←/→ (Shift: ×5), Home/End, Enter
+// resets; double-click resets. Clamped to SPLIT_MIN..SPLIT_MAX. Hidden (one column) under 800px.
+function initSplit() {
+  const P = window.cockpitPrefs;
+  const handle = $("split");
+  const grid = handle.parentElement;
+  const show = (v) => {
+    const n = Math.round(v);
+    handle.setAttribute("aria-valuenow", String(n));
+    handle.setAttribute("aria-valuetext", "question bank " + n + "% of the width");
+  };
+  const setSplit = (v, persist) => {
+    v = P.clampSplit(v);
+    document.documentElement.style.setProperty("--split", String(v));
+    show(v);
+    if (persist) P.set({ split: v });
+    return v;
+  };
+  let drag = null;
+  const endDrag = () => {
+    if (!drag) return;
+    const v = drag.v;
+    drag = null;
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    setSplit(v, true);
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const box = grid.getBoundingClientRect();
+    const cs = getComputedStyle(grid);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const gutter = handle.getBoundingClientRect().width;
+    drag = { left: box.left + padL + gutter / 2, width: box.width - padL - padR - gutter, v: P.get().split };
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing");
+    e.preventDefault();                       // no text selection / native drag while resizing
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || drag.width <= 0) return;
+    drag.v = setSplit(((e.clientX - drag.left) / drag.width) * 100, false);
+  });
+  handle.addEventListener("pointerup", endDrag);
+  handle.addEventListener("pointercancel", endDrag);
+  handle.addEventListener("lostpointercapture", endDrag);
+  handle.addEventListener("dblclick", () => setSplit(P.DEFAULTS.split, true));
+  handle.addEventListener("keydown", (e) => {
+    const cur = P.get().split;
+    const step = e.shiftKey ? 10 : 2;
+    const to = { ArrowLeft: cur - step, ArrowRight: cur + step, Home: P.SPLIT_MIN, End: P.SPLIT_MAX,
+                 Enter: P.DEFAULTS.split }[e.key];
+    if (to == null) return;
+    e.preventDefault();
+    setSplit(to, true);
+  });
+  const refresh = () => show(P.get().split);
+  refresh();
+  return refresh;
+}
+
+// ── #2022 Settings: font / theme / text size, applied live and kept by window.cockpitPrefs ──────
+function initSettings(refreshSplit) {
+  const P = window.cockpitPrefs;
+  const dlg = $("settings");
+  const form = $("settings-form");
+  const opener = $("settings-btn");
+  const sync = () => {
+    const p = P.get();
+    Object.keys(P.CHOICES).forEach((k) => {
+      const radio = form.querySelector('input[name="' + CSS.escape(k) + '"][value="' + CSS.escape(p[k]) + '"]');
+      if (radio) radio.checked = true;
+    });
+    $("settings-storage").textContent = P.storageOk()
+      ? "Kept in this browser only — never in the session folder."
+      : "Browser storage is blocked here, so these settings last until you reload.";
+  };
+  opener.addEventListener("click", () => {
+    sync();
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+  form.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!t || !Object.prototype.hasOwnProperty.call(P.CHOICES, t.name)) return;
+    P.set({ [t.name]: t.value });
+    sync();
+  });
+  $("settings-reset").addEventListener("click", () => {
+    P.reset();
+    sync();
+    refreshSplit();
+  });
+  dlg.addEventListener("close", () => opener.focus());
+}
+
+initSettings(initSplit());
 boot();
 </script>
 </body>

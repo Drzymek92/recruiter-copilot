@@ -14,6 +14,7 @@ Surface (00_concept §4):
     GET  /                       → the cockpit page (static HTML shell, always served)
     GET  /session                → the loaded bundle state (403 until consent is complete, D18)
     POST /question/{id}/state    → transition a question (D16 lifecycle); broadcasts to /events
+    POST /pack/{key}/dismiss     → hide one candidate-question pack answer (D26; no state change)
     POST /replay                 → drive the prepared transcript into /events (demo, no mic)
     WS   /events                 → pushes the bundle+transcript snapshot on connect and on change
     WS   /audio?role=interviewer|candidate
@@ -24,6 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import signal
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,6 +39,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .config import Settings
+from .info_pack import InfoPackIndex, PackAnswer, answer_transcript, split_sections
 from .live import (
     LiveCapture,
     LiveProtocolError,
@@ -66,8 +72,15 @@ from .report import disclosure_from_settings
 from .store import save_session
 from .stt import SttProvider, build_stt_provider
 
+logger = logging.getLogger("recruiter_copilot.server")
+
 STATIC_DIR = Path(__file__).parent / "static"
 COCKPIT_HTML = STATIC_DIR / "cockpit.html"
+# #2023: bound on uvicorn's graceful drain (its default is unbounded). Under docker stop's 10 s.
+GRACEFUL_SHUTDOWN_S = 5
+# #2027: bound on decoding the live STT backlog at shutdown, before the transcript is persisted
+# (kept below GRACEFUL_SHUTDOWN_S). Segments still undecoded then are dropped with one WARNING.
+LIVE_DRAIN_TIMEOUT_S = 4.0
 
 
 class ConsentRequired(PermissionError):
@@ -127,11 +140,15 @@ def session_state(
     transcript: list[TranscriptLine],
     settings: Settings,
     dismissed: set[str] | None = None,
+    dismissed_pack: set[str] | None = None,
 ) -> dict[str, Any]:
     """The ``/session`` and ``/events`` payload: bundle state + transcript so far + disclosure.
 
     ``proposals`` are the matcher's pending suggestions over the transcript so far (D16 — shown,
     never applied). ``dismissed`` is the set of question ids the interviewer has waved off.
+    ``pack`` (D26) is ``None`` when the bundle has no info pack — the cockpit then shows no panel —
+    else the latest candidate questions with their verbatim section or "not in pack";
+    ``dismissed_pack`` holds the answer keys the interviewer has waved off.
     """
     primary = session.languages.primary
     proposals = compute_proposals(session, transcript, settings, dismissed)
@@ -154,6 +171,7 @@ def session_state(
         "counts": session.counts(),
         "transcript": [to_dict(line) for line in transcript],
         "proposals": [p.as_dict() for p in proposals],
+        "pack": pack_view(session, transcript, settings, dismissed_pack),
         "consent_complete": session.consent.is_complete,
         "disclosure": disclosure_payload(settings),
     }
@@ -247,7 +265,7 @@ def close_before(
 def live_up_to(
     session: Session, question_id: str, transcript: list[TranscriptLine]
 ) -> float | None:
-    """The auto-close bound for a save with no explicit ``up_to`` (#984).
+    """The auto-close bound for a save with no explicit ``up_to`` (#984, D25).
 
     Once ANOTHER question has been marked asked after this one, the open span stops at the last
     line before that mark instead of running to now — on a live call "now" may be many questions
@@ -316,6 +334,47 @@ def compute_proposals(
         if current is None or proposal.confidence > current.confidence:
             best[proposal.question_id] = proposal
     return sorted(best.values(), key=lambda p: p.confidence, reverse=True)
+
+
+# ── D26 candidate questions: the recruiter's info pack, shown verbatim (pure) ──────────────────
+
+# How many candidate questions the panel lists (newest first). Older ones stay in the transcript.
+PACK_PANEL_MAX = 4
+
+
+def compute_pack_answers(
+    session: Session,
+    transcript: list[TranscriptLine],
+    settings: Settings,
+    dismissed: set[str] | None = None,
+) -> list[PackAnswer]:
+    """Candidate questions over the transcript so far, each with its pack section or none (D26).
+
+    Lexical only (D21 IDF cosine), deterministic, no model. Empty when the bundle has no pack.
+    Reads the transcript and the pack; changes nothing — no click on this panel moves a question.
+    """
+    sections = split_sections(session.job.info_pack)
+    if not sections or not transcript:
+        return []
+    index = InfoPackIndex.build(sections)
+    return answer_transcript(transcript, index, settings.info_pack_min_confidence, dismissed)
+
+
+def pack_view(
+    session: Session,
+    transcript: list[TranscriptLine],
+    settings: Settings,
+    dismissed: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """The ``pack`` block of the snapshot: ``None`` = no pack in the bundle = feature off (D26)."""
+    sections = split_sections(session.job.info_pack)
+    if not sections:
+        return None
+    answers = compute_pack_answers(session, transcript, settings, dismissed)
+    return {
+        "sections": len(sections),
+        "answers": [a.as_dict() for a in reversed(answers[-PACK_PANEL_MAX:])],
+    }
 
 
 # ── replay driver (M3 acceptance: demonstrable without a mic) ───────────────────────────────
@@ -423,6 +482,7 @@ class Cockpit:
     transcript: list[TranscriptLine] = field(default_factory=list)
     session_dir: Path | None = None  # set → answer/notes changes persist to session.json (F4)
     dismissed: set[str] = field(default_factory=set)  # proposal question ids waved off (D16)
+    dismissed_pack: set[str] = field(default_factory=set)  # D26 pack-answer keys waved off
     live: LiveCapture | None = None  # M4: the ws:/audio streams + STT worker (None = replay only)
     transcript_saved: dict[str, Any] | None = None  # #988: where/when the live transcript landed
     _persist_base: PipelineStats | None = None  # #994: stats of captures already on disk (frozen)
@@ -436,7 +496,9 @@ class Cockpit:
         return self.session.consent.is_complete
 
     def snapshot(self) -> dict[str, Any]:
-        state = session_state(self.session, self.transcript, self.settings, self.dismissed)
+        state = session_state(
+            self.session, self.transcript, self.settings, self.dismissed, self.dismissed_pack
+        )
         state["type"] = "snapshot"
         live = self.live.view() if self.live is not None else None
         if live is not None:
@@ -561,6 +623,10 @@ class Cockpit:
         """Wave off a proposal so the matcher stops re-surfacing it (D16). Never changes state."""
         self.dismissed.add(question_id)
 
+    def dismiss_pack_answer(self, key: str) -> None:
+        """D26: hide one candidate-question pack answer. Never changes any question state."""
+        self.dismissed_pack.add(key)
+
     def apply_replay_event(self, event: dict[str, Any]) -> None:
         if event["type"] == "transcript":
             from .models import from_dict  # noqa: PLC0415
@@ -616,7 +682,15 @@ def create_app(
     async def _lifespan(_app: FastAPI):
         yield
         # #988: a live call the interviewer never stopped still lands on disk at shutdown.
+        # #2027: decode what is still in the live backlog first (bounded) — the loop ends right
+        # after this, cancelling the worker and any ``live-finish`` task mid-drain.
+        if cockpit.live is not None:
+            await cockpit.live.drain_for(LIVE_DRAIN_TIMEOUT_S)
         cockpit.persist_transcript()
+        # #2028: a decode (or provider load) still running is on a daemon thread — nothing joins
+        # it, so serve releases the lock and exits now; only after this persist is it abandoned.
+        if cockpit.live is not None:
+            cockpit.live.abandon_in_flight()
 
     app = FastAPI(
         title="recruiter-copilot cockpit", docs_url=None, redoc_url=None, lifespan=_lifespan
@@ -771,6 +845,16 @@ def create_app(
         await cockpit.broadcast(cockpit.snapshot())
         return {"dismissed": sorted(cockpit.dismissed)}
 
+    @app.post("/pack/{key}/dismiss")
+    async def dismiss_pack_route(key: str) -> Any:
+        """D26: hide one candidate-question pack answer. Changes no question state."""
+        gate = _consent_gate()
+        if gate is not None:
+            return gate
+        cockpit.dismiss_pack_answer(key)
+        await cockpit.broadcast(cockpit.snapshot())
+        return {"dismissed": sorted(cockpit.dismissed_pack)}
+
     @app.post("/replay")
     async def replay(delay: float = 0.0) -> Any:
         gate = _consent_gate()
@@ -791,19 +875,42 @@ def create_app(
             await ws.close()
             return
         queue = cockpit.subscribe()
-        try:
+
+        async def push() -> None:
             await ws.send_json(cockpit.snapshot())
             while True:
-                message = await queue.get()
-                await ws.send_json(message)
-        except (WebSocketDisconnect, RuntimeError):
-            pass
+                await ws.send_json(await queue.get())
+
+        async def until_disconnect() -> None:
+            # #2023: the cockpit sends nothing here, but the disconnect (a closed tab, or uvicorn's
+            # close-1012 on shutdown) only reaches a handler that receives. Parked on queue.get()
+            # alone, the handler outlived the socket and uvicorn's graceful drain waited on it.
+            while (await ws.receive()).get("type") != "websocket.disconnect":
+                pass
+
+        tasks = [asyncio.create_task(push()), asyncio.create_task(until_disconnect())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                error = task.exception()
+                if error is not None and not isinstance(error, (WebSocketDisconnect, RuntimeError)):
+                    raise error
         finally:
-            cockpit.unsubscribe(queue)
+            cockpit.unsubscribe(queue)  # first: even a cancel landing below must drop the queue
+            for task in tasks:
+                task.cancel()
+            # #2033: wait, not gather. A cancel of THIS handler landing while gather waits on the
+            # already-cancelled children surfaced as a child's bare CancelledError(), not the
+            # canceller's — an anyio cancel scope (TestClient's) then did not recognise it as its
+            # own and let it escape. ``asyncio.wait`` re-raises only this task's own cancel.
+            await asyncio.wait(tasks)
+            for task in tasks:
+                if not task.cancelled():
+                    task.exception()  # retrieved (decided above which ones matter): no log noise
 
     @app.websocket("/audio")
     async def audio(ws: WebSocket, role: str = "") -> None:
-        """M4 (D13/D22): one PCM16/16 kHz stream per role. Refused before consent (D18).
+        """M4 (D13/D22/D24): one PCM16/16 kHz stream per role. Refused before consent (D18).
 
         Protocol: the handshake is refused (HTTP 403) when consent is incomplete or the role is
         unknown; the first message must be the JSON ``hello``; then binary frames of any size;
@@ -829,7 +936,23 @@ def create_app(
             await ws.send_json({"type": "error", "error": str(e)})
             await ws.close(code=1003)
             return
-        await live.ensure_provider()  # may load a model — off the loop, before audio flows
+        try:
+            await live.ensure_provider()  # may load a model — off the loop, before audio flows
+        except asyncio.CancelledError:
+            # #2034: the one place a handler outlives uvicorn's graceful bound (#2029) — it is
+            # cancelled here by design. Re-raising would end the same way, but uvicorn's run_asgi
+            # logs ANY exception from the app ("Exception in ASGI application" + traceback), so
+            # the expected cancel is one WARNING and the handler ends: nothing awaits this task
+            # after the cancel, and no stream is open, so there is nothing to flush or persist.
+            logger.warning(
+                "shutdown: /audio handler for role %r cancelled while waiting for the STT "
+                "provider load — no stream was open, no audio was consumed",
+                role_name,
+            )
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()  # the cancel is handled: the task ends now, by returning
+            return
         stream = live.open_stream(role_name)
         await ws.send_json(
             {
@@ -893,16 +1016,70 @@ def serve(
     ``serve`` on the same folder (e.g. another ``--port``) raises ``SessionLocked`` before binding.
     Every serve locks, replay demo or not: any cockpit may start a live capture and writes
     ``session.json`` on save/notes. The lock is released when uvicorn returns (clean shutdown).
+
+    #1563: SIGTERM (``docker stop``, ``kill``, systemd) is a clean stop too. uvicorn (0.52) traps
+    SIGTERM, shuts down gracefully, restores the PREVIOUS handler and re-raises the signal — with
+    the default disposition that killed the process before ``finally`` ran, leaking the lock.
+    So on POSIX we install a handler first that raises ``_Terminated``: uvicorn restores it and
+    re-raises into it, the exception unwinds through ``finally`` (lock released), and serve returns
+    normally → exit 0, same as Ctrl-C (uvicorn swallows the re-raised KeyboardInterrupt). The same
+    handler covers a SIGTERM during startup, before uvicorn's own handlers are in place.
+
+    #2023: one signal must also stop serve while a cockpit tab is connected. uvicorn's graceful
+    shutdown closes each websocket (1012) and then waits for the app's handlers to return; the
+    ``/events`` handler now ends on that close, and ``GRACEFUL_SHUTDOWN_S`` bounds the wait for
+    any handler that does not (before: unbounded — only a second signal forced the exit).
+
+    #2027: with ``/audio`` open, the closing handler flushes the open segment; the lifespan
+    shutdown then decodes the live backlog for at most ``LIVE_DRAIN_TIMEOUT_S`` before persisting
+    the transcript (before: it persisted at once and the loop's end cancelled the decode, so the
+    backlog never reached disk). What is still undecoded then is dropped with one WARNING.
+
+    #2028: a decode (or provider load) still running then runs on a daemon thread, so neither
+    ``asyncio.run``'s default-executor shutdown nor the interpreter-exit join waits for it: the
+    lifespan persists, logs one WARNING, the lock is released and the process exits.
     """
     import uvicorn  # noqa: PLC0415 — heavy import stays out of the pure path
 
     from . import session_lock  # noqa: PLC0415
 
-    if session_dir is not None:
-        session_lock.acquire(session_dir)
+    previous = _trap_sigterm()
     try:
-        app = create_app(settings, session, replay_events, session_dir=session_dir)
-        uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning")
-    finally:
         if session_dir is not None:
-            session_lock.release(session_dir)
+            session_lock.acquire(session_dir)
+        try:
+            app = create_app(settings, session, replay_events, session_dir=session_dir)
+            uvicorn.run(
+                app,
+                host=settings.host,
+                port=settings.port,
+                log_level="warning",
+                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            )
+        finally:
+            if session_dir is not None:
+                session_lock.release(session_dir)
+    except _Terminated:
+        pass  # a requested stop: lock released above, exit like Ctrl-C (status 0)
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+class _Terminated(BaseException):
+    """Raised by serve's SIGTERM handler (#1563); BaseException so no ``except Exception`` eats it."""
+
+
+def _raise_terminated(signum: int, frame: Any) -> None:
+    raise _Terminated
+
+
+def _trap_sigterm() -> Any:
+    """POSIX main thread: route SIGTERM to ``_Terminated``; return the handler to restore, else None.
+
+    Windows is left untouched (#1563): no deliverable SIGTERM there (``TerminateProcess`` cannot be
+    caught), and a non-main thread (tests) cannot set signal handlers.
+    """
+    if os.name == "nt" or threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.signal(signal.SIGTERM, _raise_terminated)

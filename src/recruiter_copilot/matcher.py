@@ -89,6 +89,56 @@ def _unit(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
     return {t: v / norm for t, v in vec.items()}
 
 
+Variants = dict[str, list[tuple[str, dict[str, float]]]]
+
+
+def build_variant_vectors(
+    raw: dict[str, list[tuple[str, list[str]]]],
+) -> tuple[dict[str, float], Variants]:
+    """IDF over every variant (one variant = one document) → unit vectors per item variant.
+
+    Shared by the question bank (``QuestionIndex``, D21) and the candidate-question info pack
+    (``info_pack.InfoPackIndex``, D26) so both score with ONE implementation. ``raw`` maps an item
+    id to ``(variant tag, tokens)`` pairs; a term common to every variant is damped wherever it
+    appears, and a query term absent from every variant gets weight 0.
+    """
+    docs = [tokens for items in raw.values() for _, tokens in items]
+    n = max(1, len(docs))
+    df: dict[str, int] = {}
+    for tokens in docs:
+        for t in set(tokens):
+            df[t] = df.get(t, 0) + 1
+    idf = {t: math.log((n + 1) / (c + 0.5)) for t, c in df.items()}
+    variants = {
+        item_id: [(tag, _unit(tokens, idf)) for tag, tokens in items]
+        for item_id, items in raw.items()
+    }
+    return idf, variants
+
+
+def score_variants(
+    tokens: list[str], idf: dict[str, float], variants: Variants, lang: str = ""
+) -> list[tuple[str, float]]:
+    """Cosine of ``tokens`` against each item's best-matching variant, best item first.
+
+    ``lang`` is a preference, not a filter: a variant tagged with the spoken language gets a tiny
+    nudge that breaks ties between two wordings of the same item; it cannot promote another item.
+    """
+    if not tokens:
+        return []
+    vec = _unit(tokens, idf)
+    scored: list[tuple[str, float]] = []
+    for item_id, items in variants.items():
+        best = 0.0
+        for tag, ivec in items:
+            sim = sum(w * ivec.get(t, 0.0) for t, w in vec.items())
+            if lang and tag == lang:
+                sim *= 1.05
+            best = max(best, sim)
+        scored.append((item_id, best))
+    return sorted(scored, key=lambda kv: kv[1], reverse=True)
+
+
 @dataclass
 class QuestionIndex:
     """IDF-weighted bag of words per question, **one vector per language variant**.
@@ -124,18 +174,8 @@ class QuestionIndex:
             raw[q.id] = items
 
         # IDF is computed over the whole bank so a term common to every question is damped
-        # wherever it appears; a variant is one document.
-        docs = [tokens for items in raw.values() for _, tokens in items]
-        n = max(1, len(docs))
-        df: dict[str, int] = {}
-        for tokens in docs:
-            for t in set(tokens):
-                df[t] = df.get(t, 0) + 1
-        idf = {t: math.log((n + 1) / (c + 0.5)) for t, c in df.items()}
-        variants = {
-            qid: [(lang, _unit(tokens, idf)) for lang, tokens in items]
-            for qid, items in raw.items()
-        }
+        # wherever it appears; a variant is one document (shared with the D26 info pack).
+        idf, variants = build_variant_vectors(raw)
         return cls(questions=questions, idf=idf, variants=variants)
 
     def score(self, text: str, lang: str = "") -> list[tuple[str, float]]:
@@ -144,22 +184,7 @@ class QuestionIndex:
         ``lang`` is a preference, not a filter: an interviewer who asks a Polish-only bank
         question in English must still match, so every variant is scored and the best wins.
         """
-        tokens = content_tokens(text)
-        if not tokens:
-            return []
-        vec = _unit(tokens, self.idf)
-        scored: list[tuple[str, float]] = []
-        for qid, items in self.variants.items():
-            best = 0.0
-            for variant_lang, qvec in items:
-                sim = sum(w * qvec.get(t, 0.0) for t, w in vec.items())
-                # A tiny nudge for the language actually spoken breaks ties between two
-                # wordings of the same question; it cannot promote a different question.
-                if lang and variant_lang == lang:
-                    sim *= 1.05
-                best = max(best, sim)
-            scored.append((qid, best))
-        return sorted(scored, key=lambda kv: kv[1], reverse=True)
+        return score_variants(content_tokens(text), self.idf, self.variants, lang)
 
 
 INTERROGATIVES = frozenset("""
@@ -313,8 +338,13 @@ def propose_llm(
         candidates = [q for q in open_questions if q.id in keep]
 
     prompt = build_llm_prompt(line.text, candidates, line.lang or "")
+    # #2035: ``max_tokens=16`` binds only on the api profile — the local Ollama request never
+    # carries a cap (#2019) and qwen3 thinks by default (D23), so a one-id answer cost ~5 s of
+    # thinking. A provider that offers a think-off variant (Ollama only) is asked through it.
+    without_thinking = getattr(chat, "without_thinking", None)
     try:
-        reply = chat.complete(prompt, system=LLM_SYSTEM, max_tokens=16)  # type: ignore[attr-defined]
+        asker = without_thinking() if callable(without_thinking) else chat
+        reply = asker.complete(prompt, system=LLM_SYSTEM, max_tokens=16)  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001 — a matcher failure must never stop a transcript
         return None
     matched = parse_llm_answer(reply.text, {q.id for q in candidates})

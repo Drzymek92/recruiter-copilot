@@ -17,10 +17,10 @@ the **English-only** lines below — the app still tags languages and runs every
 
 Confirms the install works, with no friend and no microphone.
 
-From the repo root:
+From `projects/recruiter_copilot/`:
 
 ```bash
-pip install -e ".[local,dev]" && pytest -q   # see README > Install
+pip install -e ".[local,dev]" && pytest -q
 ```
 
 ```bash

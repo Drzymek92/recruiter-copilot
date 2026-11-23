@@ -160,6 +160,100 @@ def test_analyse_without_audio_uses_the_saved_transcript(tmp_path: Path, monkeyp
     assert len(list(folder.glob("report_*.md"))) == 1
 
 
+class _ResettableStubChat(_StubChat):
+    """A local-profile stub that counts prompt-cache resets (#2006)."""
+
+    def __init__(self) -> None:
+        self.resets = 0
+        self.prompts_at_reset: list[int] = []
+        self.prompts = 0
+
+    def reset_prompt_cache(self) -> bool:
+        self.resets += 1
+        self.prompts_at_reset.append(self.prompts)
+        return True
+
+    def complete(self, prompt, system=None, max_tokens=None):
+        self.prompts += 1
+        return super().complete(prompt, system=system, max_tokens=max_tokens)
+
+
+def _saved_transcript_session(tmp_path: Path) -> Path:
+    from recruiter_copilot.models import Speaker, TranscriptLine
+    from recruiter_copilot.pipeline import PipelineStats, save_transcript
+
+    folder = _make_session_dir(tmp_path)
+    lines = [
+        TranscriptLine(0.0, 5.0, "Opowiedz o projekcie.", Speaker.INTERVIEWER, "pl"),
+        TranscriptLine(6.0, 12.0, "Zbudowałem system wyszukiwania.", Speaker.CANDIDATE, "pl"),
+    ]
+    save_transcript(folder, lines, PipelineStats(lines=2), [])
+    return folder
+
+
+def test_analyse_resets_the_ollama_prompt_cache_once_before_any_model_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#2006: identical runs only match when each starts from the same (empty) prompt cache."""
+    from recruiter_copilot import llm
+
+    stub = _ResettableStubChat()
+    monkeypatch.setattr(llm, "build_chat_provider", lambda settings: stub)
+    monkeypatch.delenv("OLLAMA_RESET_BEFORE_ANALYSE", raising=False)
+    folder = _saved_transcript_session(tmp_path)
+    rc = main(["analyse", str(folder), "--env-file", str(tmp_path / "none")], out=io.StringIO())
+    assert rc == 0
+    assert stub.resets == 1 and stub.prompts_at_reset == [0]
+
+
+def test_analyse_cache_reset_can_be_switched_off_by_flag_or_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from recruiter_copilot import llm
+
+    folder = _saved_transcript_session(tmp_path)
+    env_file = str(tmp_path / "none")
+    stub = _ResettableStubChat()
+    monkeypatch.setattr(llm, "build_chat_provider", lambda settings: stub)
+    monkeypatch.delenv("OLLAMA_RESET_BEFORE_ANALYSE", raising=False)
+    assert main(["analyse", str(folder), "--no-ollama-reset", "--env-file", env_file]) == 0
+    assert stub.resets == 0
+    monkeypatch.setenv("OLLAMA_RESET_BEFORE_ANALYSE", "0")
+    assert main(["analyse", str(folder), "--env-file", env_file]) == 0
+    assert stub.resets == 0
+    assert main(["analyse", str(folder), "--ollama-reset", "--env-file", env_file]) == 0
+    assert stub.resets == 1  # the CLI flag beats the env
+
+
+def test_analyse_reasoning_effort_is_opt_in_by_flag_or_env(tmp_path: Path, monkeypatch) -> None:
+    """#2012: unset by default; `--reasoning-effort` beats OLLAMA_REASONING_EFFORT."""
+    from recruiter_copilot import llm
+
+    folder = _saved_transcript_session(tmp_path)
+    env_file = str(tmp_path / "none")
+    seen: list[str] = []
+
+    def build(settings):
+        seen.append(settings.ollama_reasoning_effort)
+        return _ResettableStubChat()
+
+    monkeypatch.setattr(llm, "build_chat_provider", build)
+    monkeypatch.delenv("OLLAMA_REASONING_EFFORT", raising=False)
+    assert main(["analyse", str(folder), "--env-file", env_file]) == 0
+    out = io.StringIO()
+    assert (
+        main(
+            ["analyse", str(folder), "--reasoning-effort", "none", "--env-file", env_file], out=out
+        )
+        == 0
+    )
+    assert "reasoning_effort=none" in out.getvalue()
+    monkeypatch.setenv("OLLAMA_REASONING_EFFORT", "high")
+    assert main(["analyse", str(folder), "--env-file", env_file]) == 0
+    assert main(["analyse", str(folder), "--reasoning-effort", "none", "--env-file", env_file]) == 0
+    assert seen == ["", "none", "high", "none"]
+
+
 def test_analyse_without_audio_or_transcript_is_exit_1(tmp_path: Path, capsys) -> None:
     folder = _make_session_dir(tmp_path)
     assert main(["analyse", str(folder), "--env-file", str(tmp_path / "none")]) == 1

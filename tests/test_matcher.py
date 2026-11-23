@@ -237,6 +237,22 @@ def test_hybrid_shortlists_before_asking() -> None:
     assert len(chat.prompts) == 1
 
 
+def test_model_routes_ask_through_the_think_off_variant_when_offered() -> None:
+    """#2035: a provider with ``without_thinking`` (Ollama) is asked through that copy."""
+
+    class ThinkingChat(FakeChat):
+        def without_thinking(self) -> FakeChat:
+            return quick
+
+    quick = FakeChat("q2")
+    slow = ThinkingChat("q1")
+    index = QuestionIndex.build(_bank())
+    for route in ("llm", "hybrid"):
+        p = propose_for_line(_line("A co wdrożyłeś ostatnio?"), 0, index, route, 0.0, chat=slow)
+        assert p is not None and p.question_id == "q2"
+    assert slow.prompts == [] and len(quick.prompts) == 2
+
+
 def test_parse_llm_answer_rejects_invented_ids() -> None:
     assert parse_llm_answer("q2", {"q1", "q2"}) == "q2"
     assert parse_llm_answer("The answer is q1.", {"q1"}) == "q1"

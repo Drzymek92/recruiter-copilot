@@ -32,6 +32,12 @@ DEFAULT_STT_MODEL = "large-v3-turbo"
 # scripts/eval_contradictions.py --runs 3, measured 2026-09-13 #978):
 #   qwen3:14b     recall 0.667  precision 0.889  FP 0/run    ~9.3 GB VRAM  ~115 s   (D23 default)
 #   llama3.1:8b   recall 0.889  precision 0.381  FP ~2.7/run ~4.9 GB VRAM  ~27 s    (light fallback)
+# Re-baseline 2026-11-20 (#2011, cold, post-#2005): every eval run now starts from an empty Ollama
+# prompt cache (#2006), so N runs are comparable. The 09-13 row above mixed cold + warm runs.
+#   qwen3:14b     recall 0.667  precision 1.000  FP 0/run    ~9.6 GB VRAM  ~146 s   (ground_truth x5,
+#                 all 5 runs identical; catches cv_two_years + cover_letter, misses sole_ownership)
+#   qwen3:14b     recall 0.333  precision 0.500  FP 1/run    (stt fixture x3, all 3 identical,
+#                 ~112 s; the FP is a cover_letter timeline finding; sole_ownership lost to STT)
 # DEFAULT is the precision anchor (zero false positives). LIGHT is the measured fallback for a
 # VRAM-constrained / CPU seat (goal O1 "runs anywhere"): a stock, pullable model that halves VRAM
 # and runs ~4x faster, catching MORE real contradictions (higher recall) at the cost of precision —
@@ -40,6 +46,9 @@ DEFAULT_STT_MODEL = "large-v3-turbo"
 # Do NOT drop to llama3.2:3b: measured recall 0.000 (catches nothing) — it is not usable for analysis.
 DEFAULT_ANALYSER_MODEL = "qwen3:14b"
 LIGHT_ANALYSER_MODEL = "llama3.1:8b"
+
+# Accepted OLLAMA_REASONING_EFFORT values (#2012). "" = do not send the parameter (model default).
+REASONING_EFFORTS = frozenset({"", "none", "low", "medium", "high"})
 
 
 class SettingsError(ValueError):
@@ -61,6 +70,25 @@ class Settings:
     # Not a credential: Ollama on localhost ignores the value, but the OpenAI client refuses an
     # empty string. Overridable for an authenticated reverse proxy in front of it.
     ollama_token: str = "local-no-auth"
+    # #2006 (measured 2026-11-20, qwen3:14b, Ollama 0.40.2): at temperature 0 the output is fixed
+    # by the backend's PROMPT-CACHE state, not by a seed. A cold model and a warm one (whose cache
+    # still holds the previous run's prompts) gave two different, each self-repeating, findings
+    # sets on the same session; seed=42 changed no token count. Unloading the model before an
+    # `analyse` batch makes every run start from the same empty cache. Off = old behaviour.
+    ollama_reset_before_analyse: bool = True
+    # #2012 (measured 2026-11-20, qwen3:14b, Ollama 0.40.2): the OpenAI endpoint returns a reasoning
+    # model's thinking in a separate `reasoning` field (never inside `content`), and the one request
+    # switch it honours is `reasoning_effort`: "none" turns thinking OFF; "low"/"medium"/"high" left
+    # qwen3's thinking unchanged (no budget). Ollama's native `think` is ignored on this endpoint.
+    # Empty (the default) sends NO reasoning_effort, so the request is byte-identical to before.
+    ollama_reasoning_effort: str = ""
+    # #2014 (measured 2026-11-20, qwen3:14b, Ollama 0.40.2): the model loads at a 4096-token
+    # context and the OpenAI endpoint IGNORES options.num_ctx (only a Modelfile changes it). Real
+    # analysis prompts ran ~3.4 chars/token and peaked at 2714 prompt tokens (#2006). Ollama cuts
+    # an over-long prompt to the window silently and reports the CUT count as prompt_tokens, so a
+    # reply whose prompt_tokens sits at (or just under) this window is flagged as truncated
+    # (llm.ChatReply). Set it to the window the model actually loads with; 0 disables the check.
+    ollama_context_tokens: int = 4096
     stt_model: str = DEFAULT_STT_MODEL
     stt_device: str = "auto"  # auto | cuda | cpu
     stt_compute_type: str = "auto"  # auto → float16 on cuda, int8 on cpu
@@ -125,6 +153,17 @@ class Settings:
     matcher_route: str = "lexical"  # lexical | llm | hybrid | off
     matcher_min_confidence: float = 0.45  # below this no proposal is raised
 
+    # --- candidate-question info pack (D26, G10) — shown verbatim, never generated ---
+    # Below this IDF cosine a candidate question shows "Not in your pack". Measured on the
+    # synthetic pl+en bench (scripts/bench_info_pack.py, 43 lines): 0.35–0.36 is the plateau,
+    # P 0.96 / R 0.89; the higher end is taken because a wrong section shown is the costlier error.
+    info_pack_min_confidence: float = 0.36
+
+    # --- analyser ---
+    # #999 (opt-in): after a question's first call finds a contradiction, re-ask once without the
+    # docs it already cites, so one found conflict cannot mask another. Off = one call per answer.
+    analyse_second_pass: bool = False
+
     @property
     def secrets(self) -> frozenset[str]:
         return frozenset({"openai_api_key", "anthropic_api_key"})
@@ -172,6 +211,16 @@ class Settings:
                 f"host={self.host!r} refused: the server binds loopback only (D14, SI1). "
                 "Use 127.0.0.1 (set RECRUITER_COPILOT_HOST to choose the bind host)."
             )
+        if self.ollama_reasoning_effort not in REASONING_EFFORTS:
+            raise SettingsError(
+                f"OLLAMA_REASONING_EFFORT={self.ollama_reasoning_effort!r} must be empty "
+                "(model default) or one of none, low, medium, high"
+            )
+        if self.ollama_context_tokens < 0:
+            raise SettingsError(
+                f"OLLAMA_CONTEXT_TOKENS={self.ollama_context_tokens} must be >= 0 "
+                "(the loaded context window; 0 disables the context truncation check)"
+            )
         if not (1 <= self.port <= 65535):
             raise SettingsError(f"PORT={self.port} is out of range")
         if self.stt_device not in {"auto", "cuda", "cpu"}:
@@ -183,6 +232,11 @@ class Settings:
         if self.matcher_route not in {"lexical", "llm", "hybrid", "off"}:
             raise SettingsError(
                 f"MATCHER_ROUTE={self.matcher_route!r} must be lexical, llm, hybrid or off"
+            )
+        if not (0.0 <= self.info_pack_min_confidence <= 1.0):
+            raise SettingsError(
+                f"INFO_PACK_MIN_CONFIDENCE={self.info_pack_min_confidence} must be within 0..1 "
+                "(a cosine threshold, D26)"
             )
         if self.vad_frame_ms not in {10, 20, 30}:
             raise SettingsError(
@@ -201,6 +255,9 @@ ENV_MAP: dict[str, str] = {
     "OLLAMA_BASE_URL": "ollama_base_url",
     "OLLAMA_MODEL": "ollama_model",
     "OLLAMA_TOKEN": "ollama_token",
+    "OLLAMA_RESET_BEFORE_ANALYSE": "ollama_reset_before_analyse",
+    "OLLAMA_REASONING_EFFORT": "ollama_reasoning_effort",
+    "OLLAMA_CONTEXT_TOKENS": "ollama_context_tokens",
     "STT_MODEL": "stt_model",
     "STT_DEVICE": "stt_device",
     "STT_COMPUTE_TYPE": "stt_compute_type",
@@ -231,6 +288,8 @@ ENV_MAP: dict[str, str] = {
     "STT_CODESWITCH_MODE": "stt_codeswitch_mode",
     "MATCHER_ROUTE": "matcher_route",
     "MATCHER_MIN_CONFIDENCE": "matcher_min_confidence",
+    "INFO_PACK_MIN_CONFIDENCE": "info_pack_min_confidence",
+    "ANALYSE_SECOND_PASS": "analyse_second_pass",
 }
 
 # Fields coerced from their string env form. Everything else stays a string.
@@ -243,12 +302,14 @@ _INT_FIELDS = frozenset(
         "stt_beam_size",
         "stt_codeswitch_min_windows",
         "stt_bias_max_chars",
+        "ollama_context_tokens",
     }
 )
 _FLOAT_FIELDS = frozenset(
     {
         "stt_language_min_prob",
         "matcher_min_confidence",
+        "info_pack_min_confidence",
         "segment_max_seconds",
         "segment_silence_seconds",
         "segment_min_seconds",
@@ -265,7 +326,14 @@ _FLOAT_FIELDS = frozenset(
     }
 )
 _BOOL_FIELDS = frozenset(
-    {"keep_audio", "stt_detect_language", "stt_bias_prompt", "stt_bias_include_vocab"}
+    {
+        "keep_audio",
+        "stt_detect_language",
+        "stt_bias_prompt",
+        "stt_bias_include_vocab",
+        "ollama_reset_before_analyse",
+        "analyse_second_pass",
+    }
 )
 
 _TRUE = {"1", "true", "yes", "on"}
@@ -287,6 +355,8 @@ def _coerce(name: str, raw: Any) -> Any:
         return float(raw)
     if name == "sessions_dir":
         return Path(raw)
+    if name == "ollama_reasoning_effort":
+        return str(raw).strip().lower()
     return str(raw).strip() if isinstance(raw, str) else raw
 
 

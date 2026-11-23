@@ -70,6 +70,13 @@ Every proposal waits for your click — the app never marks a question asked by 
    "Save answer" pins the transcript span to the question — from its asked-mark to the next
    question's asked-mark (or to now while it is the latest one); "Save up to…" lets you pick the
    answer's last line in the transcript by mouse or keyboard instead.
+   When the *candidate* asks a question — about benefits, salary, remote work — and the bundle
+   has an info pack (`docs/job_info.md`, D26), the cockpit shows the matching `##` section of your
+   pack word for word, or "Not in your pack". Nothing is generated and nothing changes until you
+   speak; text above the first `##` is ignored, and without the file the panel does not appear. The
+   pack is never used as evidence: it stays out of the analysis and the report. The match threshold
+   (`INFO_PACK_MIN_CONFIDENCE`, default 0.36) was measured with `python scripts/bench_info_pack.py`.
+   `examples/sample_session/docs/job_info.md` shows the shape.
 3. **After the call** — Stop saves the live transcript to `<session>/transcript.json` (inside the
    bundle, so `purge` removes it) and `recruiter-copilot analyse <session>` — no `--audio` —
    produces the report from it: per question a summary, verbatim quotes with
@@ -93,9 +100,32 @@ The port works the same way: **`PORT`** in the env or `config/.env` (default `87
 e.g. `recruiter-copilot serve sessions/demo --port 9001` when 8765 is taken.
 
 One session folder is served by one process at a time: `serve` writes a `.serve.lock` (its PID)
-into the session folder and removes it on shutdown, so a second `serve` on the same folder — on
+into the session folder and removes it on shutdown (one Ctrl-C or SIGTERM, e.g. `docker stop`,
+also with a cockpit tab still open — at most ~5 s for in-flight requests to drain, plus up to 4 s
+to decode a live capture's backlog), so a second `serve` on the same folder — on
 any port — refuses to start with a message naming the holder; a lock left by a crashed process
 (dead PID) is taken over with a warning, and `purge` deletes it with the rest of the folder.
+
+**Stop timeouts for a supervisor (Docker, compose, systemd).** One SIGTERM is a clean stop:
+`serve` lets in-flight requests drain for at most `GRACEFUL_SHUTDOWN_S` = **5 s**, removes
+`.serve.lock`, and exits 0. If a live capture is streaming (`/audio` open mid-speech), the open
+segment is flushed and the STT backlog is decoded for at most `LIVE_DRAIN_TIMEOUT_S` = **4 s**
+before `transcript.json` is written, so speech already captured is saved. Segments still not
+decoded by then are left out with one WARNING (`shutdown: N live segment(s) not decoded within
+4.0 s …`); a decode (or model load) still running then is abandoned, not waited for — the
+transcript is already saved and the lock removed before the process exits (one WARNING:
+`shutdown: abandoning N in-flight STT call(s) …`). A SIGKILL skips all of that and **leaks the lock**. What the next
+`serve` on that folder then does is decided by `session_lock.py`: the leftover lock is taken over
+(one WARNING) when it was written on this same hostname and its PID is no longer running, when
+its PID is the new `serve`'s own PID but that process never took the lock (a restarted container
+where `serve` gets the same PID back, often PID 1), or when the file is unreadable. Otherwise the
+new `serve` refuses to start, naming the recorded PID, host and start time, and the path to
+delete. The container case that still ends up refused is a new container with a different
+hostname (its lock is another host's, so liveness cannot be checked): delete `.serve.lock` by hand. To
+avoid the SIGKILL in the first place, give the supervisor a stop timeout above 5 s + 4 s:
+`docker stop -t`, compose `stop_grace_period`, systemd `TimeoutStopSec`. Docker's default of
+10 s already qualifies, so don't lower it — however slow the STT model, an in-flight decode no
+longer adds to that bound.
 
 ## Live capture — browser support (G4)
 

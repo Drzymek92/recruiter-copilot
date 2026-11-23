@@ -36,6 +36,12 @@ if TYPE_CHECKING:  # avoid a runtime import cycle; analysis imports nothing from
     from .config import Settings
 
 
+#: Rendered (md + HTML) in place of the CEFR line when ``cefr_estimate`` is empty. The estimate is
+#: DEFERRED (D17, OPEN_DESIGN G9, #2008): say so explicitly rather than leave a bare dash that reads
+#: like a missing value. A set estimate still renders as ``CEFR estimate: <value>``.
+CEFR_NOT_ESTIMATED = "CEFR: not estimated (deferred — see D17)"
+
+
 # ── assembly (pure; the only place Settings is read) ─────────────────────────────────────────
 
 
@@ -69,6 +75,9 @@ def build_report(
     """Assemble a ``Report`` from an ``AnalysisResult`` (disclosure from settings, consent from the
     session). Pure: no file I/O. ``generated_at`` defaults to now (UTC, ISO-8601 to the second)."""
     when = generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    withheld: dict[str, int] = {}
+    for m in result.filtered_meta_lines:  # #2007: count + rule only, never the line text
+        withheld[m.rule] = withheld.get(m.rule, 0) + 1
     return Report(
         session_id=session.id,
         generated_at=when,
@@ -77,6 +86,7 @@ def build_report(
         analyses=result.analyses,
         fit=result.fit,
         language=result.language,
+        withheld_meta_lines=withheld,
     )
 
 
@@ -107,6 +117,27 @@ def _egress_line(d: ProviderDisclosure) -> str:
             f"{d.chat_provider} (chat) / {d.stt_provider} (transcription)"
         )
     return "no — all processing stayed on this machine"
+
+
+def _withheld_line(withheld: dict[str, int]) -> str:
+    """#2007 audit line: how many candidate lines the meta/tool-talk filter withheld, and by which
+    rule(s). Count + rule only — never the withheld text. ``""`` when nothing was withheld."""
+    total = sum(withheld.values())
+    if total <= 0:
+        return ""
+    rules = ", ".join(f"{rule} ×{n}" for rule, n in sorted(withheld.items()))
+    noun = "line" if total == 1 else "lines"
+    label = "rule" if len(withheld) == 1 else "rules"
+    return f"{total} {noun} withheld as meta/tool talk ({label}: {rules}) — not analysed."
+
+
+def _truncation_line(signals: list[str]) -> str:
+    """#2026: one reader-facing line when a model call for this question was truncated, naming
+    the signal(s) that fired. ``""`` when none did (nothing is shown)."""
+    if not signals:
+        return ""
+    label = "signal" if len(signals) == 1 else "signals"
+    return f"⚠ Prompt truncated ({', '.join(signals)} {label}) — this finding may be incomplete"
 
 
 # ── markdown ─────────────────────────────────────────────────────────────────────────────────
@@ -145,6 +176,8 @@ def render_markdown(report: Report) -> str:
     lines += ["", "## Per-question findings", ""]
     for qa in report.analyses:
         lines += _question_md(qa)
+    if withheld := _withheld_line(report.withheld_meta_lines):
+        lines += ["", f"_{withheld}_"]
     if report.language is not None:
         lines += ["", "## Language assessment (indicative)", ""]
         lines += _language_md(report.language)
@@ -172,6 +205,8 @@ def _question_md(qa) -> list[str]:
         score = "n/a" if qa.score is None else f"{qa.score}/5"
         head = f"### {qa.question_id} — score {score} (confidence {qa.confidence:.2f})"
     out = [head, ""]
+    if truncated := _truncation_line(qa.truncation):
+        out += [f"**{truncated}**", ""]
     if qa.interviewer_edit:
         out += [f"> Interviewer edit: {qa.interviewer_edit}", ""]
     if qa.summary:
@@ -194,14 +229,16 @@ def _question_md(qa) -> list[str]:
         if con.explanation:
             out.append(f"- {con.explanation}")
         out.append("")
+    if qa.compared_answers:  # #2015: ids only, never the answer text
+        out += [f"Compared with earlier answers: {', '.join(qa.compared_answers)}", ""]
     return out
 
 
 def _language_md(language) -> list[str]:
-    cefr = language.cefr_estimate or "—"
+    cefr = language.cefr_estimate
     out = [
         f"- Language: {language.language}",
-        f"- CEFR estimate: **{cefr}**",
+        f"- CEFR estimate: **{cefr}**" if cefr else f"- {CEFR_NOT_ESTIMATED}",
     ]
     for obs in language.observations:
         out.append(f"- {obs}")
@@ -230,6 +267,7 @@ blockquote { margin: .3rem 0 .3rem .5rem; padding-left: .7rem;
              border-left: 3px solid #bbb; color: #333; }
 .ts { color: #777; font-size: .82rem; }
 .notev { color: #777; font-style: italic; }
+.truncated { color: #a0410a; }
 .sev-high { color: #a0410a; font-weight: 600; }
 .sev-medium { color: #9a6a00; font-weight: 600; }
 .sev-low { color: #555; font-weight: 600; }
@@ -284,6 +322,8 @@ def render_html(report: Report) -> str:
     body.append("<h2>Per-question findings</h2>")
     for qa in report.analyses:
         body += _question_html(qa)
+    if withheld := _withheld_line(report.withheld_meta_lines):
+        body.append(f'<p class="meta">{_esc(withheld)}</p>')
     if report.language is not None:
         body += ["<h2>Language assessment (indicative)</h2>", *_language_html(report.language)]
     if report.interviewer_summary:
@@ -326,6 +366,8 @@ def _question_html(qa) -> list[str]:
             f"(confidence {qa.confidence:.2f})</h3>"
         )
     out = ["<section>", head]
+    if truncated := _truncation_line(qa.truncation):
+        out.append(f'<p class="truncated"><strong>{_esc(truncated)}</strong></p>')
     if qa.interviewer_edit:
         out.append(f"<p><em>Interviewer edit:</em> {_esc(qa.interviewer_edit)}</p>")
     if qa.summary:
@@ -352,16 +394,23 @@ def _question_html(qa) -> list[str]:
         out.append(f"<blockquote>{_esc(con.source_doc)}: “{_esc(con.source_quote)}”</blockquote>")
         if con.explanation:
             out.append(f"<p>{_esc(con.explanation)}</p>")
+    if qa.compared_answers:  # #2015: ids only, never the answer text
+        ids = ", ".join(_esc(qid) for qid in qa.compared_answers)
+        out.append(f"<p>Compared with earlier answers: {ids}</p>")
     out.append("</section>")
     return out
 
 
 def _language_html(language) -> list[str]:
-    cefr = language.cefr_estimate or "—"
+    cefr = language.cefr_estimate
     out = [
         "<ul>",
         f"<li>Language: {_esc(language.language)}</li>",
-        f"<li>CEFR estimate: <strong>{_esc(cefr)}</strong></li>",
+        (
+            f"<li>CEFR estimate: <strong>{_esc(cefr)}</strong></li>"
+            if cefr
+            else f"<li>{_esc(CEFR_NOT_ESTIMATED)}</li>"
+        ),
     ]
     out += [f"<li>{_esc(obs)}</li>" for obs in language.observations]
     out.append("</ul>")

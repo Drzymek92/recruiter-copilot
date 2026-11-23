@@ -51,6 +51,7 @@ def test_bundle_summary_shape(sample_session_dir: Path) -> None:
         "cover_letter": True,
         "previous_summary": True,
         "job_requirements": True,
+        "job_info": True,  # D26: sample_session ships a synthetic info pack
     }
     assert b["questions"] == {"pending": 6, "asked": 0, "answered": 0, "skipped": 0}
     assert b["languages"] == "pl+en" and b["consent_complete"] is False

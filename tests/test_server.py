@@ -364,6 +364,46 @@ def test_save_answer_route_persists_and_broadcasts(tmp_path, settings):
     assert client.post("/question/zzz/answer", json={}).status_code in (404,)
 
 
+def _stall_loop_on_disconnect(app, seconds: float):
+    """ASGI wrapper: when a websocket's disconnect arrives, block the app's LOOP THREAD for
+    ``seconds`` (a loop starved under load). TestClient's ``websocket_connect`` exit sends the
+    disconnect and then, from the test thread, cancels the session's anyio scope — so that cancel
+    is queued behind the stall and lands while ``/events`` is tearing down its tasks."""
+    import time
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] != "websocket":
+            return await app(scope, receive, send)
+
+        async def stalled_receive():
+            message = await receive()
+            if message["type"] == "websocket.disconnect":
+                time.sleep(seconds)  # deliberately blocking: this IS the starved loop
+            return message
+
+        return await app(scope, stalled_receive, send)
+
+    return wrapped
+
+
+def test_events_teardown_keeps_the_cancel_scope_identity_under_a_stalled_loop(
+    demo_session, settings
+):
+    """#2033: the flake's cause, made deterministic. ``/events`` tore down with
+    ``await asyncio.gather(children, return_exceptions=True)``; a cancel of the handler landing
+    there came out as the CHILD's bare ``CancelledError()`` — not the canceller's — so the
+    TestClient's anyio scope (which swallows only its own "Cancelled via cancel scope …") let it
+    escape and ``websocket_connect``'s exit raised ``concurrent.futures.CancelledError``. Measured
+    before the fix: 10/10 here, 2/30 for the save-answer test under GIL contention."""
+    inner = create_app(settings, demo_session)
+    with TestClient(_stall_loop_on_disconnect(inner, 0.2)) as client:
+        for _ in range(3):
+            with client.websocket_connect("/events") as ws:  # exit must not raise
+                assert ws.receive_json()["type"] == "snapshot"
+    # a handler cancelled mid-teardown still drops its broadcast queue
+    assert inner.state.cockpit._subscribers == set()
+
+
 def test_proposal_confirm_requires_click_and_dismiss(demo_session, settings, demo_transcript):
     # seed the cockpit's transcript by constructing the app with a Cockpit that already has lines
     app = create_app(settings, demo_session)
