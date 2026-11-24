@@ -6,3 +6,6 @@ years of LLM experience (CV vs. cover letter), sole ownership vs. team effort (c
 HR screen), and English level (self-assessed B2 vs. "fluent"). The consent block is empty so the
 consent gate (D18) is exercised by the demo. `docs/job_info.md` is a synthetic recruiter info pack
 (D26): the cockpit shows its `##` sections verbatim when the candidate asks about them.
+
+Inspect it with `second-chair info examples/sample_session` (D27 command name; the old
+`recruiter-copilot` alias also works).

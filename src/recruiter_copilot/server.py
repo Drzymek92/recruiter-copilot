@@ -535,7 +535,7 @@ class Cockpit:
         """#988/#994: write the live transcript to ``<session_dir>/transcript.json`` (+ ``.txt``).
 
         Goes through the post-hoc ``pipeline.save_transcript`` — same file, same shape — so
-        ``recruiter-copilot analyse <session_dir>`` consumes a live call exactly like a recording.
+        ``second-chair analyse <session_dir>`` consumes a live call exactly like a recording.
         No-op when the cockpit is unbound (tests, demo), when no line came from the live path (a
         replay-only demo never writes into the bundle), or when the transcript is empty. The files
         sit inside the session folder, so ``purge`` removes them with the rest (D18).
@@ -693,7 +693,10 @@ def create_app(
             cockpit.live.abandon_in_flight()
 
     app = FastAPI(
-        title="recruiter-copilot cockpit", docs_url=None, redoc_url=None, lifespan=_lifespan
+        title="Second Chair cockpit",  # D27 public name
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_lifespan,
     )
     cockpit = Cockpit(
         session=session,

@@ -5,7 +5,7 @@ The left channel plays the interviewer (the browser's mic socket), the right cha
 device: it is the replay path for the live plumbing, so the real local STT can be proven on the
 fixture without a person at a microphone.
 
-    # against a cockpit you already started (recruiter-copilot serve examples/demo_session)
+    # against a cockpit you already started (second-chair serve <session>; D27 command name)
     python scripts/push_wav_ws.py --wav tests/fixtures/mock_interview.wav --url http://127.0.0.1:8765
 
     # self-contained: spawn the cockpit on a spare port, stream, report, tear it down

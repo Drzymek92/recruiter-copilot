@@ -128,7 +128,7 @@ def test_empty_env_value_falls_through_to_file(tmp_path: Path) -> None:
     assert s.ollama_model == "file-model"
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "203.0.113.5"])
 def test_non_loopback_address_host_is_refused(host: str) -> None:
     """D14: a non-loopback bind ADDRESS is still refused — via bare HOST or the namespaced var."""
     with pytest.raises(SettingsError, match="loopback"):
@@ -174,6 +174,74 @@ def test_recruiter_copilot_host_non_address_is_refused() -> None:
     """The namespaced var is a deliberate choice: a non-loopback value is refused (D14), not ignored."""
     with pytest.raises(SettingsError, match="loopback"):
         load_settings(environ={"RECRUITER_COPILOT_HOST": "example.com"})
+
+
+FLAG = {"SECOND_CHAIR_IN_CONTAINER": "1"}
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_container_wildcard_refused_without_the_flag(host: str) -> None:
+    """D14 (amended 11-23, D27 packaging): the wildcard needs the container flag."""
+    with pytest.raises(SettingsError, match="SECOND_CHAIR_IN_CONTAINER=1"):
+        load_settings(environ={"RECRUITER_COPILOT_HOST": host})
+    with pytest.raises(SettingsError, match="loopback"):
+        load_settings(overrides={"host": host}, environ={})
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_container_wildcard_allowed_with_the_flag(host: str) -> None:
+    s = load_settings(environ={**FLAG, "RECRUITER_COPILOT_HOST": host})
+    assert s.host == host and s.in_container
+    assert load_settings(overrides={"host": host}, environ=FLAG).host == host
+
+
+@pytest.mark.parametrize("host", ["203.0.113.5", "10.0.0.2", "172.17.0.1", "example.com"])
+def test_lan_or_other_host_refused_even_with_the_flag(host: str) -> None:
+    """The flag adds ONLY the wildcard: the host edge (compose) is the boundary, so naming one
+    interface buys nothing and would bypass it outside a container."""
+    with pytest.raises(SettingsError, match="container wildcard"):
+        load_settings(environ={**FLAG, "RECRUITER_COPILOT_HOST": host})
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_loopback_unchanged_with_the_flag(host: str) -> None:
+    assert load_settings(environ={**FLAG, "RECRUITER_COPILOT_HOST": host}).host == host
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "on", "0", "", " 2"])
+def test_only_the_exact_flag_value_counts(value: str) -> None:
+    s = load_settings(environ={"SECOND_CHAIR_IN_CONTAINER": value})
+    assert s.in_container is False
+    with pytest.raises(SettingsError, match="loopback"):
+        load_settings(environ={"SECOND_CHAIR_IN_CONTAINER": value, "RECRUITER_COPILOT_HOST": "::"})
+
+
+def test_container_flag_is_not_read_from_env_file_or_cli(tmp_path: Path) -> None:
+    """Only the real process environment sets the flag (the image), never a .env file or a CLI."""
+    p = tmp_path / ".env"
+    p.write_text("SECOND_CHAIR_IN_CONTAINER=1\nRECRUITER_COPILOT_HOST=0.0.0.0\n")
+    with pytest.raises(SettingsError, match="loopback"):
+        load_settings(env_file=p, environ={})
+    with pytest.raises(SettingsError, match="environment only"):
+        load_settings(overrides={"in_container": True, "host": "0.0.0.0"}, environ={})
+    assert "SECOND_CHAIR_IN_CONTAINER" not in ENV_MAP
+
+
+def test_cockpit_port_range_default_env_cli_and_bounds() -> None:
+    """D28 children: default = workspace port + 1 .. +40; CLI > env; out-of-range refused."""
+    assert load_settings(environ={}).cockpit_ports() == range(8766, 8806)
+    s = load_settings(environ={"COCKPIT_PORT_FIRST": "9000", "COCKPIT_PORT_COUNT": "10"})
+    assert s.cockpit_ports() == range(9000, 9010)
+    s = load_settings(
+        overrides={"cockpit_port_first": 8766, "cockpit_port_count": 10},
+        environ={"COCKPIT_PORT_FIRST": "9000"},
+    )
+    assert s.cockpit_ports() == range(8766, 8776)
+    for env in ({"COCKPIT_PORT_COUNT": "0"}, {"COCKPIT_PORT_FIRST": "65530"}):
+        with pytest.raises(SettingsError, match="COCKPIT_PORT"):
+            load_settings(environ=env)
+    with pytest.raises(SettingsError, match="COCKPIT_PORT"):
+        load_settings(environ={"COCKPIT_PORT_FIRST": "-1"})
 
 
 def test_api_profile_requires_a_key_and_announces_egress() -> None:

@@ -1,11 +1,28 @@
-"""``recruiter-copilot`` command line.
+"""``second-chair`` command line (Second Chair, D27).
 
-    recruiter-copilot info <session_dir>            # bundle summary + effective settings + GPU
-    recruiter-copilot new <id> --job ... --candidate ...
-    recruiter-copilot purge <id>                    # D18 — deletes a candidate's data
-    recruiter-copilot serve                         # M3
-    recruiter-copilot analyse <session_dir> [--audio <wav>]   # M1/M2; no --audio → the saved
-                                                            # transcript.json (a live call, #988)
+    second-chair info <session_dir>            # bundle summary + effective settings + GPU
+    second-chair new <id> --job ... --candidate ...
+    second-chair purge <id>                    # D18 — deletes a candidate's data
+    second-chair serve <session_dir>           # M3 cockpit for one bundle
+    second-chair serve [--workspace DIR]       # no bundle: workspace home + prep editor (D28/D29)
+    second-chair analyse <session_dir> [--audio <wav>]   # M1/M2; no --audio → the saved
+                                                       # transcript.json (a live call, #988)
+
+D28/D29 workspace (root: --workspace > SECOND_CHAIR_WORKSPACE > config > ~/SecondChair):
+
+    second-chair workspace init|list
+    second-chair job new "<title>" [--offer FILE ...] [--paste-file FILE]
+    second-chair job list
+    second-chair job generate <job-slug> [--minutes 45] [--questions 8]   # D29 → draft.json
+    second-chair job draft show <job-slug> · job accept <job-slug>        # → job.json
+    second-chair interview new <job-slug> --candidate NAME [--cv FILE] [--date YYYY-MM-DD]
+    second-chair interview tailor <interview-dir> [--n 3] · interview accept-tailored <dir>
+    second-chair template save <name> (--job SLUG | --from-session DIR) [--force]
+    second-chair template list | show <name> | delete <name> | apply <name> <job-slug>
+    second-chair purge <id | interview-folder-path>   # a path purges that bundle folder only
+
+D27: ``recruiter-copilot`` is installed as an alias of the same entry point, so existing commands
+keep working; ``prog`` (help, ``--version``) always shows ``second-chair``.
 
 Precedence for settings: CLI flags > environment > config/.env > defaults (config.load_settings).
 """
@@ -20,8 +37,12 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .config import Settings, SettingsError, gpu_report, load_settings
-from .models import Profile
+from . import templates as tpl
+from . import workspace as ws
+from .config import LOOPBACK_HOSTS, Settings, SettingsError, gpu_report, load_settings
+from .intake import IntakeError, check_size, decode_text, extract_text
+from .llm import ChatError
+from .models import Languages, Profile
 from .session_lock import SessionLocked
 from .store import (
     BadSessionId,
@@ -30,6 +51,7 @@ from .store import (
     list_sessions,
     load_session,
     new_session,
+    purge_bundle,
     purge_session,
 )
 
@@ -37,17 +59,33 @@ logger = logging.getLogger("recruiter_copilot.cli")
 
 DEFAULT_ENV_FILE = Path("config") / ".env"
 
+# D27: the public product / command name. The import package stays `recruiter_copilot`.
+PROG = "second-chair"
+PRODUCT_NAME = "Second Chair"
+
 
 def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--profile", choices=["local", "api"], default=None)
     p.add_argument("--stt-model", dest="stt_model", default=None)
     p.add_argument("--stt-device", dest="stt_device", choices=["auto", "cuda", "cpu"], default=None)
     p.add_argument("--sessions-dir", dest="sessions_dir", default=None)
+    p.add_argument(
+        "--workspace",
+        dest="workspace_dir",
+        default=None,
+        help="workspace root (D28); beats SECOND_CHAIR_WORKSPACE/config; default ~/SecondChair",
+    )
     p.add_argument("--env-file", default=None, help=f"default: {DEFAULT_ENV_FILE}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="recruiter-copilot")
+    parser = argparse.ArgumentParser(
+        prog=PROG,
+        description=(
+            f"{PRODUCT_NAME} — disclosed, local-first interviewer copilot "
+            "(`recruiter-copilot` is the same command)."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -66,18 +104,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_settings_flags(p)
 
     p = sub.add_parser("purge", help="delete a candidate's session data (D18)")
-    p.add_argument("session_id")
+    p.add_argument(
+        "session_id",
+        help="a sessions/ id, or a bundle folder path (contains '/'), e.g. a workspace "
+        "interview jobs/<job>/interviews/<date>_<candidate> (D28) — only that folder is deleted",
+    )
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     _add_settings_flags(p)
 
-    p = sub.add_parser("serve", help="run the cockpit (M3)")
-    p.add_argument("session_dir", help="the session bundle the cockpit serves")
+    p = sub.add_parser(
+        "serve",
+        help="run the cockpit for one bundle (M3), or with no bundle the workspace home (D28/D29)",
+    )
+    p.add_argument(
+        "session_dir",
+        nargs="?",
+        default=None,
+        help="the session bundle the cockpit serves; leave out to open the workspace home "
+        "(jobs, prep editor, interviews, templates, reports) for --workspace",
+    )
     p.add_argument(
         "--host",
         dest="host",
         default=None,
         help="bind host, highest precedence over RECRUITER_COPILOT_HOST/config; loopback only "
-        "(127.0.0.1, localhost, ::1) — a non-loopback value is refused (D14)",
+        "(127.0.0.1, localhost, ::1) — a non-loopback value is refused (D14); inside the Docker "
+        "image (SECOND_CHAIR_IN_CONTAINER=1) the wildcard 0.0.0.0 / :: is allowed too",
+    )
+    p.add_argument(
+        "--cockpit-port-first",
+        dest="cockpit_port_first",
+        type=int,
+        default=None,
+        help="workspace home: first port a cockpit opened from it may bind (default 0 = the "
+        "workspace port + 1; env COCKPIT_PORT_FIRST). Compose publishes exactly this range",
+    )
+    p.add_argument(
+        "--cockpit-port-count",
+        dest="cockpit_port_count",
+        type=int,
+        default=None,
+        help="workspace home: how many ports from --cockpit-port-first (default 40; env "
+        "COCKPIT_PORT_COUNT)",
     )
     p.add_argument(
         "--port",
@@ -149,7 +217,106 @@ def build_parser() -> argparse.ArgumentParser:
         "ANALYSE_SECOND_PASS)",
     )
     _add_settings_flags(p)
+    _add_workspace_parsers(sub)
     return parser
+
+
+def _add_prep_flags(p: argparse.ArgumentParser) -> None:
+    """Model-call flags for the D29 generation commands (same meaning as on ``analyse``)."""
+    p.add_argument(
+        "--ollama-reset",
+        dest="ollama_reset_before_analyse",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="unload the local model first so the draft starts from an empty prompt cache "
+        "(reproducible, D23; default on, env OLLAMA_RESET_BEFORE_ANALYSE)",
+    )
+    _add_settings_flags(p)
+
+
+def _add_workspace_parsers(sub) -> None:
+    """D28/D29: workspace, job, interview and template commands (each leaf takes --workspace)."""
+    p = sub.add_parser("workspace", help="the job-organised workspace folder (D28)")
+    wsub = p.add_subparsers(dest="workspace_cmd", required=True)
+    _add_settings_flags(wsub.add_parser("init", help="create jobs/ and templates/"))
+    _add_settings_flags(wsub.add_parser("list", help="jobs, interviews, templates, reports"))
+
+    p = sub.add_parser("job", help="job openings in the workspace (D28)")
+    jsub = p.add_subparsers(dest="job_cmd", required=True)
+    q = jsub.add_parser("new", help="create jobs/<slug>/ and drop the offer documents in")
+    q.add_argument("title")
+    q.add_argument(
+        "--offer", action="append", default=[], help="job doc (PDF, DOCX, MD, TXT); repeatable"
+    )
+    q.add_argument("--paste-file", default=None, help="a text file stored as pasted offer text")
+    q.add_argument(
+        "--languages",
+        default=None,
+        help="session languages PRIMARY[,SECONDARY], e.g. pl,en (default: en) — generated "
+        "questions get a wording in each (D29)",
+    )
+    q.add_argument(
+        "--assess-language",
+        dest="assess_language",
+        default=None,
+        help="language the role requires and the interview checks (D17), e.g. en",
+    )
+    _add_settings_flags(q)
+    _add_settings_flags(jsub.add_parser("list", help="list jobs"))
+    q = jsub.add_parser(
+        "generate", help="draft requirements, questions and a timed plan from the offer (D29)"
+    )
+    q.add_argument("job_slug")
+    q.add_argument("--minutes", type=int, default=45, help="interview length (default 45)")
+    q.add_argument("--questions", type=int, default=8, help="questions to draft (default 8)")
+    _add_prep_flags(q)
+    q = jsub.add_parser("draft", help="the pending generated draft (D29)")
+    dsub = q.add_subparsers(dest="draft_cmd", required=True)
+    q = dsub.add_parser("show", help="print the pending draft")
+    q.add_argument("job_slug")
+    _add_settings_flags(q)
+    q = jsub.add_parser("accept", help="validate the pending draft and merge it into job.json")
+    q.add_argument("job_slug")
+    _add_settings_flags(q)
+
+    p = sub.add_parser("interview", help="interview bundles under a job (D28)")
+    isub = p.add_subparsers(dest="interview_cmd", required=True)
+    q = isub.add_parser("new", help="create interviews/<date>_<candidate>/ from job.json")
+    q.add_argument("job_slug")
+    q.add_argument("--candidate", required=True)
+    q.add_argument("--cv", default=None, help="candidate CV (PDF, DOCX, MD, TXT)")
+    q.add_argument("--date", default=None, help="YYYY-MM-DD (default: today)")
+    _add_settings_flags(q)
+    q = isub.add_parser(
+        "tailor", help="draft questions probing this bundle's CV (cv_tailored, D29) — pending"
+    )
+    q.add_argument("interview_dir")
+    q.add_argument("--n", type=int, default=3, help="questions to draft (default 3)")
+    _add_prep_flags(q)
+    q = isub.add_parser(
+        "accept-tailored", help="merge the pending CV-tailored draft into session.json"
+    )
+    q.add_argument("interview_dir")
+    _add_settings_flags(q)
+
+    p = sub.add_parser("template", help="reusable question-set templates (D29)")
+    tsub = p.add_subparsers(dest="template_cmd", required=True)
+    q = tsub.add_parser("save", help="save a job's (or a bundle's) questions as a template")
+    q.add_argument("name")
+    src = q.add_mutually_exclusive_group(required=True)
+    src.add_argument("--job", dest="job_slug", default=None)
+    src.add_argument("--from-session", dest="from_session", default=None, help="a bundle dir")
+    q.add_argument("--force", action="store_true", help="overwrite an existing template")
+    _add_settings_flags(q)
+    _add_settings_flags(tsub.add_parser("list", help="list templates"))
+    for cmd in ("show", "delete"):
+        q = tsub.add_parser(cmd, help=f"{cmd} a template")
+        q.add_argument("name")
+        _add_settings_flags(q)
+    q = tsub.add_parser("apply", help="merge a template's questions into a job's job.json")
+    q.add_argument("name")
+    q.add_argument("job_slug")
+    _add_settings_flags(q)
 
 
 # Settings a CLI flag may override (highest precedence, see config.load_settings).
@@ -158,9 +325,12 @@ _CLI_OVERRIDES = (
     "stt_model",
     "stt_device",
     "sessions_dir",
+    "workspace_dir",  # D28
     "matcher_route",
     "host",
     "port",
+    "cockpit_port_first",  # D28 children
+    "cockpit_port_count",
     "ollama_reset_before_analyse",
     "ollama_reasoning_effort",
     "analyse_second_pass",
@@ -192,7 +362,7 @@ def cmd_info(args: argparse.Namespace, settings: Settings, out) -> int:
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False), file=out)
         return 0
-    print(f"recruiter-copilot {__version__}", file=out)
+    print(f"{PROG} {__version__}", file=out)
     eff = payload["effective"]
     assert isinstance(eff, dict)
     print(
@@ -308,8 +478,38 @@ def cmd_analyse(args: argparse.Namespace, settings: Settings, out) -> int:
     return 0
 
 
+def si1_disclosure_line(settings: Settings) -> str:
+    """The api-profile SI1 line ``serve`` prints; D29 generation prints the same text (D29: the
+    setup screen shows the same disclosure as the cockpit) before any document is sent."""
+    return (
+        "!! api profile: the transcript and candidate documents WILL be sent to "
+        f"{settings.chat_provider_name()} (SI1 disclosure — shown in the cockpit)"
+    )
+
+
+def _bind_note(settings: Settings) -> str:
+    if settings.in_container and settings.host not in LOOPBACK_HOSTS:
+        return "container: compose publishes it on the host's 127.0.0.1 only, D14"
+    return "loopback only, D14"
+
+
 def cmd_serve(args: argparse.Namespace, settings: Settings, out) -> int:
-    """M3 cockpit: load the bundle, prepare the replay demo, launch loopback uvicorn (D14)."""
+    """M3 cockpit: load the bundle, prepare the replay demo, launch loopback uvicorn (D14).
+
+    No bundle → the workspace home (D28/D29 UI, ``workspace_app``): home + prep editor over
+    ``--workspace``; "Open cockpit" there spawns ``serve <interview-dir>`` children."""
+    if args.session_dir is None:
+        from .workspace_app import serve_workspace  # noqa: PLC0415
+
+        print(
+            f"workspace home for {settings.workspace_dir} on http://{settings.host}:{settings.port}"
+            f" ({_bind_note(settings)}) — Ctrl-C once stops it and every cockpit opened from it",
+            file=out,
+        )
+        if settings.data_leaves_machine():
+            print(si1_disclosure_line(settings), file=out)
+        serve_workspace(settings)
+        return 0
     from .server import build_replay_events, load_replay_turns, serve  # noqa: PLC0415
 
     folder = Path(args.session_dir)
@@ -321,15 +521,11 @@ def cmd_serve(args: argparse.Namespace, settings: Settings, out) -> int:
     consent = "complete" if session.consent.is_complete else "INCOMPLETE (cockpit is gated, D18)"
     print(
         f"cockpit for {session.id} on http://{settings.host}:{settings.port} "
-        f"(loopback only, D14) — consent {consent}",
+        f"({_bind_note(settings)}) — consent {consent}",
         file=out,
     )
     if settings.data_leaves_machine():
-        print(
-            "!! api profile: the transcript and candidate documents WILL be sent to "
-            f"{settings.chat_provider_name()} (SI1 disclosure — shown in the cockpit)",
-            file=out,
-        )
+        print(si1_disclosure_line(settings), file=out)
     if replay_events:
         print(f"replay demo ready: {len(replay_events)} events from {replay_path}", file=out)
     serve(settings, session, replay_events, session_dir=folder)
@@ -398,6 +594,267 @@ def _write_report(session, lines, settings: Settings, folder: Path, out) -> dict
     return paths
 
 
+def cmd_workspace(args: argparse.Namespace, settings: Settings, out) -> int:
+    root = settings.workspace_dir
+    if args.workspace_cmd == "init":
+        ws.init_workspace(root)
+        print(f"workspace ready at {root} (jobs/, templates/ — D28)", file=out)
+        return 0
+    jobs = ws.list_jobs(root)
+    print(f"workspace {root}", file=out)
+    print(f"jobs ({len(jobs)}):", file=out)
+    for job in jobs:
+        print(
+            f"  {job.slug}  {job.title!r}  questions={job.questions} offer_docs={job.offer_docs} "
+            f"interviews={job.interviews}",
+            file=out,
+        )
+        for iv in ws.list_interviews(job.path):
+            print(f"    {iv.name}  [{iv.status}]", file=out)
+    templates = tpl.list_templates(root)
+    print(f"templates ({len(templates)}): {', '.join(t.slug for t in templates) or '-'}", file=out)
+    reports = ws.list_reports(root)
+    print(f"reports ({len(reports)}):", file=out)
+    for path in reports:
+        print(f"  {path.relative_to(root)}", file=out)
+    return 0
+
+
+def _read_paste_file(path: Path) -> str:
+    if not path.is_file():
+        raise IntakeError(f"{path}: no such file")
+    check_size(path.stat().st_size, path.name)
+    return decode_text(path.read_bytes())
+
+
+def _parse_languages(spec: str | None, assess: str | None) -> Languages | None:
+    """``pl,en`` (+ ``--assess-language en``) → ``Languages``; None when neither flag was given."""
+    if spec is None and assess is None:
+        return None
+    codes = [c.strip().lower() for c in (spec or "en").split(",") if c.strip()]
+    check = [*codes, *([assess.strip().lower()] if assess else [])]
+    if not 1 <= len(codes) <= 2 or not all(c.isalpha() and 2 <= len(c) <= 3 for c in check):
+        raise ws.WorkspaceError(
+            f"--languages {spec!r} / --assess-language {assess!r}: use PRIMARY[,SECONDARY] "
+            "language codes such as pl,en"
+        )
+    return Languages(
+        primary=codes[0],
+        secondary=codes[1] if len(codes) > 1 else None,
+        assess_language=assess.strip().lower() if assess else None,
+    )
+
+
+def _prep_chat(settings: Settings, out):
+    """The active profile's chat model for D29 generation: SI1 line first on api; on local a
+    cold prompt cache (D23) unless ``--no-ollama-reset``."""
+    from .llm import build_chat_provider  # noqa: PLC0415
+
+    if settings.data_leaves_machine():
+        print(si1_disclosure_line(settings), file=out)
+    chat = build_chat_provider(settings)
+    reset = getattr(chat, "reset_prompt_cache", None)
+    if settings.profile is Profile.LOCAL and settings.ollama_reset_before_analyse and reset:
+        reset()
+    return chat
+
+
+def _print_stats(stats, out) -> None:
+    print(
+        f"  model {stats.model or '?'}: {stats.calls} call(s), {stats.wall_seconds:.1f}s, "
+        f"first try {'valid' if stats.first_try_valid else 'INVALID → 1 repair call'}"
+        + (", plan minutes rescaled in code" if stats.rescaled else "")
+        + (f", TRUNCATION {stats.truncation}" if stats.truncation else ""),
+        file=out,
+    )
+
+
+def _print_draft(draft, out) -> None:
+    print(
+        f"draft for {draft.job_title!r} [{draft.status}] — languages {','.join(draft.languages)}, "
+        f"{draft.target_minutes} min, created {draft.created_at}",
+        file=out,
+    )
+    print(f"requirements ({len(draft.requirements)}):", file=out)
+    for r in draft.requirements:
+        flag = "" if r.grounded else "  !! UNGROUNDED (quote not in the offer)"
+        print(f"  {r.id} [{r.kind.value} w={r.weight:g}] {r.text}{flag}", file=out)
+        print(f"      quote: {r.source_quote!r}", file=out)
+    print(f"questions ({len(draft.questions)}):", file=out)
+    for q in draft.questions:
+        tags = ",".join(q.requirement_ids) or "-"
+        lang = "  [assesses language]" if q.assesses_language else ""
+        print(f"  {q.id} → {tags}{lang}", file=out)
+        for code, text in q.text.items():
+            print(f"      {code}: {text}", file=out)
+    print(f"plan ({draft.plan.total_minutes}/{draft.plan.target_minutes} min):", file=out)
+    for s in draft.plan.sections:
+        print(f"  {s.name} {s.minutes} min: {', '.join(s.question_ids) or '-'}", file=out)
+    _print_stats(draft.stats, out)
+
+
+def cmd_job(args: argparse.Namespace, settings: Settings, out) -> int:
+    root = settings.workspace_dir
+    if args.job_cmd == "list":
+        for job in ws.list_jobs(root):
+            print(f"{job.slug}\t{job.title}", file=out)
+        return 0
+    if args.job_cmd in {"generate", "draft", "accept"}:
+        from . import prep  # noqa: PLC0415
+
+        job_dir = ws.job_path(root, args.job_slug)
+        if args.job_cmd == "draft":
+            _print_draft(prep.load_draft(job_dir), out)
+            return 0
+        if args.job_cmd == "accept":
+            ids = prep.accept_draft(job_dir)
+            spec = ws.load_job(job_dir)
+            print(
+                f"accepted the draft into {job_dir / ws.JOB_FILE}: {len(ids)} question(s) added "
+                f"({len(spec.questions)} total, {len(spec.requirements)} requirement(s), plan "
+                f"{spec.plan.total_minutes if spec.plan else 0} min)",
+                file=out,
+            )
+            return 0
+        chat = _prep_chat(settings, out)
+        print(f"drafting interview prep for {job_dir.name} with {chat.name} ...", file=out)
+        draft = prep.draft_job_prep(
+            job_dir, chat, target_minutes=args.minutes, n_questions=args.questions
+        )
+        _print_draft(draft, out)
+        if draft.ungrounded:
+            print(
+                f"  !! {len(draft.ungrounded)} requirement(s) not found in the offer: "
+                f"{', '.join(draft.ungrounded)} — kept as grounded=False; you decide",
+                file=out,
+            )
+        print(
+            f"PENDING draft → {job_dir / prep.DRAFT_FILE} (job.json unchanged until "
+            f"`{PROG} job accept {job_dir.name}`)",
+            file=out,
+        )
+        return 0
+    offers = [Path(f) for f in args.offer]
+    pasted = _read_paste_file(Path(args.paste_file)) if args.paste_file else None
+    languages = _parse_languages(args.languages, args.assess_language)
+    for f in offers:  # validate before the job folder exists, so a bad doc leaves no job behind
+        extract_text(f)
+    folder = ws.create_job(root, args.title, languages)
+    docs = ws.add_offer_docs(folder, offers, pasted) if (offers or pasted is not None) else []
+    print(f"created job {folder.name} at {folder}", file=out)
+    for doc in docs:
+        print(f"  offer/{doc.name} ({doc.kind}, {doc.chars} chars) → {doc.text_file}", file=out)
+    return 0
+
+
+def cmd_interview(args: argparse.Namespace, settings: Settings, out) -> int:
+    if args.interview_cmd in {"tailor", "accept-tailored"}:
+        from . import prep  # noqa: PLC0415
+
+        folder = Path(args.interview_dir).expanduser()
+        if args.interview_cmd == "accept-tailored":
+            ids = prep.accept_cv_draft(folder)
+            print(
+                f"added {len(ids)} cv_tailored question(s) to {folder / 'session.json'}: "
+                f"{', '.join(ids)} (kept out of job.json and templates, D28/D29)",
+                file=out,
+            )
+            return 0
+        chat = _prep_chat(settings, out)
+        print(f"drafting CV-tailored questions for {folder.name} with {chat.name} ...", file=out)
+        questions = prep.draft_cv_questions(folder, chat, n=args.n)
+        draft = prep.load_cv_draft(folder)
+        for q in questions:
+            flag = "  !! cv_quote not found in the CV" if q.id in draft.ungrounded else ""
+            print(f"  {q.id} (cv: {draft.cv_quotes.get(q.id, '')!r}){flag}", file=out)
+            for code, text in q.text.items():
+                print(f"      {code}: {text}", file=out)
+        _print_stats(draft.stats, out)
+        print(
+            f"PENDING draft → {folder / prep.CV_DRAFT_FILE} (accept with `{PROG} interview "
+            f"accept-tailored {folder}`)",
+            file=out,
+        )
+        return 0
+    job_dir = ws.job_path(settings.workspace_dir, args.job_slug)
+    folder = ws.create_interview(
+        job_dir, args.candidate, args.date, Path(args.cv) if args.cv else None
+    )
+    session = load_session(folder)
+    print(
+        f"created interview {folder} — {len(session.questions)} question(s); fill consent "
+        f"before recording (D18); serve it with: {PROG} serve {folder}",
+        file=out,
+    )
+    return 0
+
+
+def cmd_template(args: argparse.Namespace, settings: Settings, out) -> int:
+    root = settings.workspace_dir
+    cmd = args.template_cmd
+    if cmd == "list":
+        for t in tpl.list_templates(root):
+            print(f"{t.slug}\t{t.name}\t{len(t.questions)} question(s)", file=out)
+        return 0
+    if cmd == "show":
+        t = tpl.load_template(root, args.name)
+        print(f"{t.name} ({t.slug}) — created {t.created_at}", file=out)
+        print(f"  languages {t.languages.primary}+{t.languages.secondary or '-'}", file=out)
+        for q in t.questions:
+            print(f"  {q.id}: {q.wording(t.languages.primary)}", file=out)
+        if t.plan is not None:
+            print(f"  plan: {t.plan.target_minutes} min target", file=out)
+            for s in t.plan.sections:
+                print(f"    {s.name} {s.minutes} min: {', '.join(s.question_ids)}", file=out)
+        return 0
+    if cmd == "delete":
+        print(f"deleted {tpl.delete_template(root, args.name)}", file=out)
+        return 0
+    if cmd == "apply":
+        job_dir = ws.job_path(root, args.job_slug)
+        added = tpl.apply_template(job_dir, args.name, root=root)
+        print(f"applied {args.name} to {job_dir.name}: {len(added)} question(s) added", file=out)
+        return 0
+    # save
+    if args.job_slug:
+        path, left_out = tpl.save_job_as_template(
+            root, ws.job_path(root, args.job_slug), args.name, overwrite=args.force
+        )
+    else:
+        path, left_out = tpl.save_session_as_template(
+            root, Path(args.from_session), args.name, overwrite=args.force
+        )
+    print(f"saved template {path}", file=out)
+    if left_out:
+        print(
+            f"  left out cv_tailored question(s) (candidate data, D29): {', '.join(left_out)}",
+            file=out,
+        )
+    return 0
+
+
+def _is_path_arg(value: str) -> bool:
+    """A purge target is a folder path when it reads like one; otherwise a sessions/ id."""
+    return "/" in value or "\\" in value or value.startswith(("~", "."))
+
+
+def cmd_purge(args: argparse.Namespace, settings: Settings, out) -> int:
+    target = args.session_id
+    as_path = _is_path_arg(target)
+    label = str(Path(target).expanduser()) if as_path else repr(target)
+    if not args.yes:
+        answer = input(f"delete ALL data of session {label}? [y/N] ")
+        if answer.strip().lower() != "y":
+            print("aborted", file=out)
+            return 1
+    if as_path:
+        deleted = purge_bundle(Path(target))
+    else:
+        deleted = purge_session(settings.sessions_dir, target)
+    print(f"purged {target}: {len(deleted)} file(s) deleted", file=out)
+    return 0
+
+
 def _write_atomic(path: Path, text: str) -> None:
     """Write-temp-then-rename so a crash never leaves a half-written report (house rule)."""
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -430,17 +887,27 @@ def main(argv: list[str] | None = None, out=None) -> int:
         if args.command == "serve":
             return cmd_serve(args, settings, out)
         if args.command == "purge":
-            if not args.yes:
-                answer = input(f"delete ALL data of session {args.session_id!r}? [y/N] ")
-                if answer.strip().lower() != "y":
-                    print("aborted", file=out)
-                    return 1
-            deleted = purge_session(settings.sessions_dir, args.session_id)
-            print(f"purged {args.session_id}: {len(deleted)} file(s) deleted", file=out)
-            return 0
+            return cmd_purge(args, settings, out)
+        if args.command == "workspace":
+            return cmd_workspace(args, settings, out)
+        if args.command == "job":
+            return cmd_job(args, settings, out)
+        if args.command == "interview":
+            return cmd_interview(args, settings, out)
+        if args.command == "template":
+            return cmd_template(args, settings, out)
         print(f"{args.command}: not built yet (see agent/project.md milestones)", file=out)
         return 2
-    except (SettingsError, SessionNotFound, BadSessionId, FileExistsError, SessionLocked) as e:
+    except (
+        SettingsError,
+        SessionNotFound,
+        BadSessionId,
+        FileExistsError,
+        SessionLocked,
+        IntakeError,
+        ws.WorkspaceError,  # includes prep.PrepError (D29: reasons listed, nothing written)
+        ChatError,
+    ) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

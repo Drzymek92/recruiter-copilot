@@ -5,6 +5,8 @@ config/.env
 
 # candidate data never enters git (consent + purge, D18)
 sessions/
+# Docker compose host bind mount (jobs/interviews — candidate data)
+workspace/
 *.wav
 !tests/fixtures/mock_interview.wav
 logs/

@@ -12,7 +12,7 @@ The report is the interviewer's deliverable and the project's honesty surface:
 
 Rendering is **pure** (MOD): ``Report`` in, strings out — no file I/O, no clock, no settings read.
 The CLI writes the strings to disk (``output_paths`` names the two files with one shared timestamp),
-into the session folder so ``recruiter-copilot purge`` removes them (D18). ``build_report`` is the
+into the session folder so ``second-chair purge`` removes them (D18). ``build_report`` is the
 thin, still-pure assembly seam that turns an ``AnalysisResult`` + ``Settings`` + ``Session`` into a
 ``Report``; only it reads ``Settings`` (to fill the disclosure), and it takes no I/O either.
 """
@@ -140,6 +140,15 @@ def _truncation_line(signals: list[str]) -> str:
     return f"⚠ Prompt truncated ({', '.join(signals)} {label}) — this finding may be incomplete"
 
 
+# D27: reports carry the public product name (markdown heading, HTML <title> and <h1>).
+PRODUCT_NAME = "Second Chair"
+
+
+def report_title(session_id: str) -> str:
+    """The report title (unescaped) — one source for the markdown heading and the HTML title/h1."""
+    return f"{PRODUCT_NAME} · Interview analysis — {session_id}"
+
+
 # ── markdown ─────────────────────────────────────────────────────────────────────────────────
 
 
@@ -147,7 +156,7 @@ def render_markdown(report: Report) -> str:
     d = report.disclosure
     c = report.consent
     lines: list[str] = [
-        f"# Interview analysis — {report.session_id}",
+        f"# {report_title(report.session_id)}",
         "",
         f"_Generated {report.generated_at}. Decision support only — not an automated "
         "hiring decision (SI2); every finding is editable before use._",
@@ -290,7 +299,7 @@ def render_html(report: Report) -> str:
     d = report.disclosure
     c = report.consent
     body: list[str] = [
-        f"<h1>Interview analysis — {_esc(report.session_id)}</h1>",
+        f"<h1>{_esc(report_title(report.session_id))}</h1>",
         f'<p class="meta">Generated {_esc(report.generated_at)}. Decision support only '
         "— not an automated hiring decision (SI2); every finding is editable before use.</p>",
         "<h2>Disclosure (D18 / SI1)</h2>",
@@ -335,7 +344,7 @@ def render_html(report: Report) -> str:
         "<!DOCTYPE html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>Interview analysis — {_esc(report.session_id)}</title>\n"
+        f"<title>{_esc(report_title(report.session_id))}</title>\n"
         f"<style>{_STYLE}</style>\n</head>\n<body>\n" + "\n".join(body) + "\n</body>\n</html>\n"
     )
 

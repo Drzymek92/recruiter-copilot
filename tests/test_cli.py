@@ -338,9 +338,46 @@ def test_serve_help_lists_port(capsys) -> None:
     assert "--port" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "203.0.113.5"])
 def test_serve_non_loopback_host_flag_is_refused(monkeypatch, tmp_path: Path, host: str) -> None:
     """D14: a non-loopback ``--host`` is refused at load — no CLI bypass, even over a valid env host."""
     monkeypatch.setenv("RECRUITER_COPILOT_HOST", "127.0.0.1")
     with pytest.raises(SettingsError, match="loopback"):
         _serve_settings(tmp_path, "--host", host)
+
+
+def test_serve_container_flag_allows_only_the_wildcard(monkeypatch, tmp_path: Path) -> None:
+    """D14 amendment 11-23: under SECOND_CHAIR_IN_CONTAINER=1 ``--host 0.0.0.0`` loads, a LAN IP
+    is still refused; the cockpit port range flags reach the settings (CLI > env)."""
+    monkeypatch.setenv("SECOND_CHAIR_IN_CONTAINER", "1")
+    monkeypatch.setenv("COCKPIT_PORT_FIRST", "9000")
+    s = _serve_settings(
+        tmp_path, "--host", "0.0.0.0", "--cockpit-port-first", "8766", "--cockpit-port-count", "10"
+    )
+    assert s.host == "0.0.0.0" and s.in_container and s.cockpit_ports() == range(8766, 8776)
+    with pytest.raises(SettingsError, match="container wildcard"):
+        _serve_settings(tmp_path, "--host", "203.0.113.5")
+
+
+# ── D27: public name Second Chair, `recruiter-copilot` kept as an alias ─────────────────────
+
+
+def test_pyproject_declares_both_console_scripts_on_one_entry_point() -> None:
+    """D27: `second-chair` is the distribution + command; `recruiter-copilot` stays an alias."""
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    meta = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+    assert meta["name"] == "second-chair"
+    scripts = meta["scripts"]
+    assert scripts["second-chair"] == "recruiter_copilot.cli:main"
+    assert scripts["recruiter-copilot"] == scripts["second-chair"]
+
+
+def test_version_and_prog_show_second_chair(capsys) -> None:
+    """D27: whichever alias launched it, help and --version name the product's command."""
+    parser = build_parser()
+    assert parser.prog == "second-chair"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--version"])
+    assert capsys.readouterr().out.startswith("second-chair ")

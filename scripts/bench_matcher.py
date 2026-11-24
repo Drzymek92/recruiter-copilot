@@ -105,7 +105,7 @@ def main() -> int:
         lines = load_transcript(Path(args.transcript))
     else:
         raise SystemExit(
-            "--transcript <folder> is required (run `recruiter-copilot analyse` first)"
+            "--transcript <folder> is required (run `second-chair analyse` first)"  # D27
         )
 
     truth = truth_by_line(lines, json.loads(FIXTURE_JSON.read_text(encoding="utf-8"))["turns"])

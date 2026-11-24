@@ -396,3 +396,16 @@ def test_output_paths_share_one_timestamp() -> None:
     assert paths["md"].name == "report_20260913_102030.md"
     assert paths["html"].name == "report_20260913_102030.html"
     assert paths["md"].parent == Path("/tmp/sess")
+
+
+def test_report_titles_carry_the_second_chair_name() -> None:
+    """D27: the markdown heading, HTML <title> and <h1> all name the product."""
+    from recruiter_copilot.report import render_html, render_markdown
+
+    report = _report()
+    md_first = render_markdown(report).splitlines()[0]
+    assert md_first.startswith("# Second Chair") and report.session_id in md_first
+    html = render_html(report)
+    title = re.search(r"<title>(.*?)</title>", html).group(1)
+    h1 = re.search(r"<h1>(.*?)</h1>", html).group(1)
+    assert title.startswith("Second Chair") and h1 == title

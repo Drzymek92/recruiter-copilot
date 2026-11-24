@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>recruiter-copilot cockpit</title>
+<!-- D27: public name Second Chair. The prefs storage KEY below keeps the old name on purpose
+     (renaming it would drop every user's saved display prefs, D14). -->
+<title>Second Chair cockpit</title>
 <script>
 // #2022 display prefs (font, theme, text size, column split): UI only, this browser only — never
 // session data. Applied here in <head>, before first paint, so a pinned theme never flashes.
@@ -157,6 +159,10 @@ window.cockpitPrefs = (function () {
     min-width: 0; text-wrap: balance;
   }
   .sub { color: var(--muted); font-size: var(--fs-sm); }
+  .brand {
+    color: var(--muted); font-size: var(--fs-xs); font-weight: 650; letter-spacing: .06em;
+    text-transform: uppercase;
+  }
   .disclosure {
     width: 100%; margin: 0; font-size: var(--fs-xs); color: var(--muted);
   }
@@ -414,6 +420,7 @@ window.cockpitPrefs = (function () {
 
 <div id="app" hidden>
   <header>
+    <span class="brand" id="brand">Second Chair</span>
     <h1 id="job-title">&hellip;</h1>
     <span class="sub" id="candidate"></span>
     <div class="toolbar">
@@ -469,8 +476,8 @@ window.cockpitPrefs = (function () {
         <p class="note sub" id="live-support">Chrome or Edge on a desktop: when asked, share the
           <em>call tab</em> and tick <em>&ldquo;Share tab audio&rdquo;</em>. Firefox and Safari cannot
           share tab audio (see README &rarr; Browser support). A recording uploaded afterwards
-          (<code>recruiter-copilot analyse --audio</code>) always works. Stop saves the live
-          transcript into the session folder, so <code>recruiter-copilot analyse &lt;session&gt;</code>
+          (<code>second-chair analyse --audio</code>) always works. Stop saves the live
+          transcript into the session folder, so <code>second-chair analyse &lt;session&gt;</code>
           runs on it afterwards.</p>
         <div id="live-saved" hidden>
           <p class="note"><strong>Transcript saved.</strong>
@@ -863,7 +870,7 @@ function setLiveStatus(text, isError) {
 function renderSaved(saved) {
   const box = $("live-saved");
   if (!saved || !saved.session_dir) { box.hidden = true; return; }
-  const cmd = "recruiter-copilot analyse " + saved.session_dir;
+  const cmd = "second-chair analyse " + saved.session_dir;  // D27 command name
   const code = $("analyse-cmd");
   code.textContent = cmd;
   code.dataset.cmd = cmd;

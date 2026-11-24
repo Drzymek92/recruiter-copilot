@@ -1,0 +1,19 @@
+# Allow-list build context (SI1 / D18): the image needs only the package source + its metadata.
+# Everything else stays out by construction — candidate data (sessions/, workspace/), logs/,
+# caches, .env and other secrets, agent/, design/, documentation*/, examples/, tests/, scripts/,
+# docs/ (the demo GIF), portfolio files.
+*
+!pyproject.toml
+!README.md
+!src/
+
+# ...and never these, even inside the allowed paths.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.env
+**/.env.*
+**/sessions
+**/workspace
+**/.serve.lock
+**/*.wav

@@ -1,0 +1,74 @@
+# Second Chair (D27) — app + a bundled Ollama, CPU by default. GPU: add compose.gpu.yaml.
+#
+#   mkdir -p workspace                                   # host folder for jobs/ + interviews (D28)
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen3:14b     # the analyser model (D23), once per volume
+#   open http://127.0.0.1:8765/                          # workspace home
+#   docker compose down                                  # one SIGTERM = serve's clean stop
+#
+# D14 (amended 11-23): every port is published on the HOST's loopback only (127.0.0.1:…), pinned
+# by tests/test_compose.py. Inside the container `serve` binds 0.0.0.0, allowed only by the image's
+# SECOND_CHAIR_IN_CONTAINER=1. The bundled Ollama publishes NOTHING: it is reachable only on the
+# compose-internal network (a host Ollama on 11434 is left alone).
+name: second-chair
+
+services:
+  app:
+    build:
+      context: .
+      target: cpu
+    image: second-chair:cpu
+    # tini as PID 1: forwards compose's SIGTERM to serve and reaps the cockpit children.
+    init: true
+    # Stable hostname: a .serve.lock left by a SIGKILLed container is then "this host" for the
+    # next container, so session_lock can check its PID and take it over (README, #1563).
+    hostname: second-chair
+    command: ["serve"]
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434/v1
+      # D23 default; for a CPU-only smoke test use a small model, e.g. OLLAMA_MODEL=llama3.2:3b.
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      # CPU decode: "small" (multilingual) keeps a CPU seat usable; compose.gpu.yaml uses
+      # large-v3-turbo on CUDA. Never a distil-* model for a bilingual session (config.py).
+      STT_MODEL: ${STT_MODEL:-small}
+      STT_DEVICE: cpu
+      PORT: "8765"
+      # Cockpits opened from the workspace bind the first free port here; the SAME numbers are
+      # published below, so the URL the page opens (http://127.0.0.1:<port>/) works on the host.
+      COCKPIT_PORT_FIRST: "8766"
+      COCKPIT_PORT_COUNT: "10"
+    ports:
+      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:8766-8775:8766-8775"
+    volumes:
+      # Jobs, interviews, reports and live sessions live on the HOST (D18: purge works there).
+      # The folder must exist and be writable by UID 1000 (the image's app user).
+      - type: bind
+        source: ${SECOND_CHAIR_HOST_WORKSPACE:-./workspace}
+        target: /workspace
+        bind:
+          create_host_path: false
+      - whisper-cache:/home/app/.cache/huggingface
+    depends_on:
+      ollama:
+        condition: service_healthy
+    # serve: <= 5 s drain + 4 s live backlog; the workspace then stops each cockpit child the same
+    # way. Above Docker's 10 s default so a child is never SIGKILLed (lock kept).
+    stop_grace_period: 30s
+
+  ollama:
+    image: ollama/ollama:0.40.2
+    # No `ports:` on purpose (D14 amendment): internal network only.
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 15s
+
+volumes:
+  ollama-models:
+  whisper-cache:

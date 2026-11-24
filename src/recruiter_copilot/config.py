@@ -3,7 +3,9 @@
 Secrets (API keys) are read from the environment only and never written anywhere. Nothing here is
 required for ``PROFILE=local`` (SI1). The bind host is loopback-only (D14): a deliberate
 non-loopback host — set via ``RECRUITER_COPILOT_HOST`` — is refused at load time rather than
-silently rebound. Bare ``HOST`` is a fallback consulted only when it parses as an address, so a
+silently rebound. The one exception is the container image (D14 amendment 11-23, D27): with
+``SECOND_CHAIR_IN_CONTAINER=1`` in the environment the wildcard ``0.0.0.0`` / ``::`` is allowed too,
+because compose publishes the port on the host's loopback only. Bare ``HOST`` is a fallback consulted only when it parses as an address, so a
 generic shell ``HOST`` (conda exports ``HOST=x86_64-conda-linux-gnu``) is ignored, not read as a
 bind address.
 """
@@ -22,6 +24,18 @@ from .models import Profile
 logger = logging.getLogger("recruiter_copilot.config")
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# D14 amendment 11-23 (#776, D27 packaging): inside the shipped container image the loopback
+# boundary moves to the HOST edge (compose publishes 127.0.0.1:<port> only), so `serve` may bind the
+# wildcard there — but only when this explicit flag is set to exactly "1" in the process
+# environment (the Dockerfile sets it; never a default, never read from a .env file or a CLI flag).
+# With the flag, only the wildcard is added: a LAN / any other address is still refused.
+CONTAINER_FLAG_ENV = "SECOND_CHAIR_IN_CONTAINER"
+CONTAINER_BIND_HOSTS = frozenset({"0.0.0.0", "::"})
+
+# D28 workspace: cockpit children bind ports from the workspace port + 1 upward (first free in the
+# span). Compose publishes exactly this range on host loopback, so it is a setting (CFG).
+DEFAULT_COCKPIT_PORT_COUNT = 40
 
 # Measured in interview_copilot on real bilingual audio (2026-08-31): large-v3-turbo decodes
 # 2.6x faster than large-v3 with equal quality; distil-* models are ENGLISH-ONLY — never default
@@ -46,6 +60,9 @@ DEFAULT_STT_MODEL = "large-v3-turbo"
 # Do NOT drop to llama3.2:3b: measured recall 0.000 (catches nothing) — it is not usable for analysis.
 DEFAULT_ANALYSER_MODEL = "qwen3:14b"
 LIGHT_ANALYSER_MODEL = "llama3.1:8b"
+
+# D28: the recruiter's workspace root when nothing else names one (`~` expanded at load).
+DEFAULT_WORKSPACE = "~/SecondChair"
 
 # Accepted OLLAMA_REASONING_EFFORT values (#2012). "" = do not send the parameter (model default).
 REASONING_EFFORTS = frozenset({"", "none", "low", "medium", "high"})
@@ -118,10 +135,19 @@ class Settings:
     # --- privacy (D18) ---
     keep_audio: bool = False
     sessions_dir: Path = field(default_factory=lambda: Path("sessions"))
+    # --- workspace (D28) — jobs/<job>/{offer,job.json,interviews/<date>_<candidate>}, templates/ ---
+    # Precedence --workspace > SECOND_CHAIR_WORKSPACE > config > this default; `~` is expanded.
+    workspace_dir: Path = field(default_factory=lambda: Path(DEFAULT_WORKSPACE).expanduser())
 
     # --- server (D14) ---
     host: str = "127.0.0.1"
     port: int = 8765
+    # D14 amendment: True only when SECOND_CHAIR_IN_CONTAINER=1 is in the process environment
+    # (set by the image). Never from a .env file or the CLI — see CONTAINER_FLAG_ENV.
+    in_container: bool = False
+    # D28 cockpit children: ports [first, first + count). 0 = the workspace port + 1 (default).
+    cockpit_port_first: int = 0
+    cockpit_port_count: int = DEFAULT_COCKPIT_PORT_COUNT
 
     # --- audio + segmentation (vendored from interview_copilot, measured there on real calls) ---
     sample_rate: int = 16000
@@ -205,10 +231,24 @@ class Settings:
                 out[f.name] = str(v) if isinstance(v, Path) else v
         return out
 
+    def bind_hosts(self) -> frozenset[str]:
+        """Hosts ``serve`` may bind (D14): loopback; plus the wildcard only under the container flag."""
+        return LOOPBACK_HOSTS | CONTAINER_BIND_HOSTS if self.in_container else LOOPBACK_HOSTS
+
+    def cockpit_ports(self) -> range:
+        """D28: the ports cockpit children may bind (the workspace port itself is skipped)."""
+        first = self.cockpit_port_first or self.port + 1
+        return range(first, first + self.cockpit_port_count)
+
     def validate(self) -> None:
-        if self.host not in LOOPBACK_HOSTS:
+        if self.host not in self.bind_hosts():
+            where = (
+                "loopback or the container wildcard 0.0.0.0 / :: only"
+                if self.in_container
+                else f"loopback only; the wildcard needs {CONTAINER_FLAG_ENV}=1, set by the image"
+            )
             raise SettingsError(
-                f"host={self.host!r} refused: the server binds loopback only (D14, SI1). "
+                f"host={self.host!r} refused: the server binds {where} (D14, SI1). "
                 "Use 127.0.0.1 (set RECRUITER_COPILOT_HOST to choose the bind host)."
             )
         if self.ollama_reasoning_effort not in REASONING_EFFORTS:
@@ -223,6 +263,14 @@ class Settings:
             )
         if not (1 <= self.port <= 65535):
             raise SettingsError(f"PORT={self.port} is out of range")
+        if self.cockpit_port_count < 1:
+            raise SettingsError(f"COCKPIT_PORT_COUNT={self.cockpit_port_count} must be >= 1")
+        if self.cockpit_port_first < 0 or self.cockpit_ports().stop - 1 > 65535:
+            raise SettingsError(
+                f"COCKPIT_PORT_FIRST={self.cockpit_port_first} / COCKPIT_PORT_COUNT="
+                f"{self.cockpit_port_count}: the cockpit port range must stay within 1-65535 "
+                "(0 = the workspace port + 1)"
+            )
         if self.stt_device not in {"auto", "cuda", "cpu"}:
             raise SettingsError(f"STT_DEVICE={self.stt_device!r} must be auto, cuda or cpu")
         if self.stt_codeswitch_mode not in {"split", "rescore", "off"}:
@@ -272,11 +320,14 @@ ENV_MAP: dict[str, str] = {
     "ANTHROPIC_MODEL": "anthropic_model",
     "KEEP_AUDIO": "keep_audio",
     "SESSIONS_DIR": "sessions_dir",
+    "SECOND_CHAIR_WORKSPACE": "workspace_dir",  # D28
     # The bind host is set with our own namespaced var. Bare ``HOST`` is consulted only as a
     # fallback and only when it parses as an address (see ``_resolve_host_from_env``): conda's
     # compiler activation exports ``HOST=x86_64-conda-linux-gnu``, which is not a bind address.
     "RECRUITER_COPILOT_HOST": "host",
     "PORT": "port",
+    "COCKPIT_PORT_FIRST": "cockpit_port_first",  # D28 children; compose publishes this range
+    "COCKPIT_PORT_COUNT": "cockpit_port_count",
     "SAMPLE_RATE": "sample_rate",
     "VAD_AGGRESSIVENESS": "vad_aggressiveness",
     "VAD_FRAME_MS": "vad_frame_ms",
@@ -296,6 +347,8 @@ ENV_MAP: dict[str, str] = {
 _INT_FIELDS = frozenset(
     {
         "port",
+        "cockpit_port_first",
+        "cockpit_port_count",
         "sample_rate",
         "vad_aggressiveness",
         "vad_frame_ms",
@@ -355,6 +408,8 @@ def _coerce(name: str, raw: Any) -> Any:
         return float(raw)
     if name == "sessions_dir":
         return Path(raw)
+    if name == "workspace_dir":
+        return Path(str(raw).strip()).expanduser()
     if name == "ollama_reasoning_effort":
         return str(raw).strip().lower()
     return str(raw).strip() if isinstance(raw, str) else raw
@@ -439,10 +494,16 @@ def load_settings(
                     "using the default loopback host",
                     raw_host,
                 )
+    # D14 container flag: the process environment only, and only the exact value "1".
+    values["in_container"] = env.get(CONTAINER_FLAG_ENV, "").strip() == "1"
     for name, raw in (overrides or {}).items():
         if raw is not None:
             if name not in {f.name for f in fields(Settings)}:
                 raise SettingsError(f"unknown setting {name!r}")
+            if name == "in_container":
+                raise SettingsError(
+                    f"in_container is set by {CONTAINER_FLAG_ENV}=1 in the environment only (D14)"
+                )
             values[name] = _coerce(name, raw)
     settings = Settings(**values)
     settings.validate()

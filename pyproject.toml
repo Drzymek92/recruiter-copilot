@@ -3,7 +3,8 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "recruiter-copilot"
+# D27: public name Second Chair. The import package stays `recruiter_copilot` (src/ unchanged).
+name = "second-chair"
 version = "0.0.1"
 description = "Disclosed, local-first interviewer copilot: bilingual transcript, question tracking, evidence-cited post-interview analysis. GPU-local or LLM-API profiles."
 readme = "README.md"
@@ -30,6 +31,9 @@ dependencies = [
   "openai==2.45.0",
   "webrtcvad-wheels==2.0.14",
   "numpy>=2.0,<3",
+  # D28 document intake (workspace offer/ + CV): PDF text layer, DOCX paragraphs + tables
+  "pypdf==7.0.1",  # newest release >= 2 weeks old at pin time (11-24); 7.1.x was days old
+  "python-docx==1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -43,18 +47,20 @@ local = [
 ]
 # PROFILE=api — Anthropic chat provider (OpenAI-compatible providers need nothing extra)
 api = ["anthropic==1.1.0"]
-dev = ["pytest==9.1.1", "ruff==0.15.21", "black==26.5.1"]
+dev = ["pytest==9.1.1", "ruff==0.15.21", "black==26.5.1", "pyyaml==6.0.3"]  # pyyaml: test_compose
 # Regenerating tests/fixtures/mock_interview.wav only. The app never speaks.
 fixtures = ["piper-tts==1.7.0"]
 
 [project.scripts]
+# D27: `second-chair` is the command; `recruiter-copilot` stays as an alias to the same entry point.
+second-chair = "recruiter_copilot.cli:main"
 recruiter-copilot = "recruiter_copilot.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-recruiter_copilot = ["static/*.html"]
+recruiter_copilot = ["static/*.html", "static/*.css", "static/*.js"]  # D14: workspace pages share css/js
 
 [tool.ruff]
 line-length = 100

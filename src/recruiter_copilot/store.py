@@ -18,6 +18,9 @@ Layout::
 
 A doc file fills its bundle field only when that field is empty in ``session.json``, so a
 hand-edited JSON value always wins over the file next to it.
+
+D28: a workspace interview folder ``jobs/<job>/interviews/<YYYY-MM-DD>_<candidate>/`` is the same
+bundle (built by ``workspace.create_interview``); ``purge_bundle`` purges it by path.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Candidate, Job, Session, load_json, save_json
+from .session_lock import LOCK_FILE, SessionLocked, live_owner
 
 SESSION_FILE = "session.json"
 DOCS_DIR = "docs"
@@ -125,14 +129,53 @@ def list_sessions(sessions_dir: Path) -> list[Path]:
     return sorted(p for p in sessions_dir.iterdir() if (p / SESSION_FILE).is_file())
 
 
+def _remove_tree(folder: Path) -> list[str]:
+    deleted = sorted(str(p.relative_to(folder)) for p in folder.rglob("*") if p.is_file())
+    shutil.rmtree(folder)
+    return deleted
+
+
 def purge_session(sessions_dir: Path, session_id: str) -> list[str]:
     """D18 / SI3: remove EVERYTHING under the session folder. Returns the deleted paths."""
     folder = session_dir(sessions_dir, session_id)
     if not folder.is_dir():
         raise SessionNotFound(str(folder))
-    deleted = sorted(str(p.relative_to(folder)) for p in folder.rglob("*") if p.is_file())
-    shutil.rmtree(folder)
-    return deleted
+    return _remove_tree(folder)
+
+
+# Files/folders that mark a workspace root or a job folder (D28). A purge target holding one of
+# them is not an interview bundle, so it is refused rather than deleted.
+_NOT_A_BUNDLE = ("job.json", "offer", "interviews", "jobs", "templates")
+
+
+def purge_bundle(folder: Path) -> list[str]:
+    """D18 / SI3 on a bundle PATH — e.g. a workspace interview
+    ``jobs/<job>/interviews/<YYYY-MM-DD>_<candidate>/`` (D28) — instead of a ``sessions/`` id.
+
+    Removes everything under ``folder`` and nothing outside it: the target must be a real
+    directory (not a symlink) holding ``session.json``, and must not hold a job's ``job.json`` /
+    ``offer/`` / ``interviews/`` or a workspace's ``jobs/`` / ``templates/``, so a mistyped path
+    can never take the job's offer, its job.json or the templates with it. Refused with
+    ``SessionLocked`` while a live ``serve`` holds the folder's ``.serve.lock`` (a stale lock —
+    dead PID — does not block; it is deleted with the folder)."""
+    folder = Path(folder).expanduser()
+    if folder.is_symlink():
+        raise BadSessionId(f"{folder} is a symlink — purge the real folder")
+    if not folder.is_dir():
+        raise SessionNotFound(str(folder))
+    if not (folder / SESSION_FILE).is_file():
+        raise BadSessionId(f"{folder} has no {SESSION_FILE} — not a session bundle, not purged")
+    marker = next((m for m in _NOT_A_BUNDLE if (folder / m).exists()), None)
+    if marker is not None:
+        raise BadSessionId(f"{folder} holds {marker!r} — a job or workspace folder, not purged")
+    owner = live_owner(folder)
+    if owner is not None:  # worker-19 follow-up: never delete a folder a live cockpit is writing
+        raise SessionLocked(
+            f"{folder} is being served by PID {owner.get('pid')} on {owner.get('host')} "
+            f"(since {owner.get('started_at')}) — stop that cockpit, then purge. If it is "
+            f"certainly gone, delete {folder / LOCK_FILE} first."
+        )
+    return _remove_tree(folder.resolve())
 
 
 def bundle_summary(session: Session) -> dict[str, object]:

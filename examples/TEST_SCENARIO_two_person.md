@@ -1,4 +1,6 @@
-# Two-person test scenario — recruiter-copilot
+# Two-person test scenario — Second Chair
+
+_D27: the command is `second-chair`; the old `recruiter-copilot` alias runs the same thing._
 
 A ~15-minute walkthrough for **two people** to exercise the app's features in one mock interview.
 Everything is synthetic (job, questions, "Candidate A", the seeded contradictions) — no real person.
@@ -24,7 +26,7 @@ pip install -e ".[local,dev]" && pytest -q
 ```
 
 ```bash
-recruiter-copilot serve examples/demo_session
+second-chair serve examples/demo_session
 ```
 
 Open the printed `http://127.0.0.1:...` URL in **Chrome**, click **Replay demo**, and watch each of
@@ -47,7 +49,7 @@ tab's audio** (candidate). The simplest two-person setup:
 3. Serve the ready bundle (complete consent, full CV/cover-letter/previous-summary):
 
    ```bash
-   recruiter-copilot serve examples/demo_session
+   second-chair serve examples/demo_session
    ```
 4. Open the loopback URL in Chrome → **Live capture → Start**. Grant the **microphone**, and for
    the candidate share the **call tab** with **"Share tab audio"** ticked.
@@ -99,13 +101,13 @@ When done, click **Stop**. This saves the live transcript into
 ## Part 3 — After the call: the analysis (Player A)
 
 ```bash
-recruiter-copilot analyse examples/demo_session
+second-chair analyse examples/demo_session
 ```
 
 *(Post-hoc fallback if you skipped live capture — point it at your recording instead:)*
 
 ```bash
-recruiter-copilot analyse examples/demo_session --audio path/to/your_call.wav
+second-chair analyse examples/demo_session --audio path/to/your_call.wav
 ```
 
 ✅ **Checks in the report:**
@@ -125,7 +127,7 @@ recruiter-copilot analyse examples/demo_session --audio path/to/your_call.wav
 ## Part 4 — Privacy / compliance check (Player A)
 
 ```bash
-recruiter-copilot purge examples/demo_session
+second-chair purge examples/demo_session
 ```
 
 ✅ **Check:** the saved transcript (and any kept audio) inside the bundle is **deleted** — confirm

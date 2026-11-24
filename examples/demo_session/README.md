@@ -7,8 +7,11 @@ seeded inconsistencies) except its **consent record is complete**, so the cockpi
 Run the cockpit and drive it without a microphone:
 
 ```
-recruiter-copilot serve examples/demo_session
+second-chair serve examples/demo_session
 ```
+
+(D27: the command is `second-chair`; `recruiter-copilot` still works. To keep this folder pristine,
+serve a copy: `cp -r examples/demo_session sessions/demo && second-chair serve sessions/demo`.)
 
 Open the printed loopback URL and click **Replay demo**: `replay.json` streams a prepared bilingual
 transcript into `/events`, and you watch each question move pending → asked → answered as its turn

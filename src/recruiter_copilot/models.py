@@ -1,4 +1,5 @@
-"""Domain contract for recruiter_copilot (design/DECISIONS.md D15, D16, D17, D20).
+"""Domain contract for recruiter_copilot (design/DECISIONS.md D15, D16, D17, D20; D28/D29 add the
+workspace ``JobSpec`` and the optional ``plan`` / ``template_ref`` / ``cv_tailored`` fields).
 
 Every other module reads and writes these shapes. Stdlib only: dataclasses + json, so a session
 bundle stays inspectable and hand-editable on disk (`sessions/<id>/session.json`).
@@ -106,6 +107,12 @@ class Requirement:
     text: str
     kind: RequirementKind = RequirementKind.MUST
     weight: float = 1.0
+    # D15 note (D29, 11-24): optional grounding of a GENERATED requirement (prep.py) — the offer
+    # phrase the model drafted it from, and whether CODE found that phrase in the offer text (D17
+    # spirit: grounding is checked, not trusted). ``grounded=None`` = never checked (hand-written,
+    # or a file older than the field). Optional and additive: older files load, schema stays v1.
+    source_quote: str = ""
+    grounded: bool | None = None
 
 
 @dataclass
@@ -183,12 +190,39 @@ class Question:
     asked_at: float | None = None  # seconds into the recording of the last asked-mark
     answers: list[AnswerSpan] = field(default_factory=list)
     notes: str = ""
+    # D15 amendment 11-24 (D29): True = tailored from a candidate's CV. Such a question is
+    # candidate data: it lives only in that interview's bundle and is never saved into a template
+    # (templates.save_template leaves it out) or into a job's job.json (D28).
+    cv_tailored: bool = False
 
     def wording(self, lang: str) -> str:
         """The question in ``lang``, falling back to any available wording."""
         if lang in self.text:
             return self.text[lang]
         return next(iter(self.text.values()), "")
+
+
+@dataclass
+class PlanSection:
+    """One timed block of the interview plan (D29): e.g. intro · experience · technical ·
+    language check · candidate questions · close. ``question_ids`` gives the question order."""
+
+    name: str
+    minutes: int = 0
+    question_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InterviewPlan:
+    """D15 amendment 11-24 (D29): optional timed plan. ``target_minutes`` is the planned length;
+    D29's validator (worker-side, at generation) checks the section minutes sum to it."""
+
+    sections: list[PlanSection] = field(default_factory=list)
+    target_minutes: int = 0
+
+    @property
+    def total_minutes(self) -> int:
+        return sum(s.minutes for s in self.sections)
 
 
 @dataclass
@@ -202,6 +236,10 @@ class Session:
     consent: Consent = field(default_factory=Consent)
     profile: Profile = Profile.LOCAL
     schema_version: int = SCHEMA_VERSION
+    # D15 amendment 11-24 (D28/D29): both optional and additive — an older session.json without
+    # the keys loads with these defaults and the schema stays v1.
+    plan: InterviewPlan | None = None
+    template_ref: str = ""  # provenance of the question set (a templates/<name>.json slug)
 
     def question(self, question_id: str) -> Question:
         for q in self.questions:
@@ -214,6 +252,42 @@ class Session:
         for q in self.questions:
             out[q.state.value] += 1
         return out
+
+
+# ── workspace job (D28, D15 amendment 11-24) ──────────────────────────────────────────────
+
+
+@dataclass
+class OfferDoc:
+    """One job document dropped into ``jobs/<job>/offer/`` (D28 intake).
+
+    ``name`` is the stored original; ``text_file`` the UTF-8 extracted text next to it (the same
+    file for an ``.md``/``.txt`` original, ``<stem>.txt`` for a PDF/DOCX)."""
+
+    name: str
+    text_file: str
+    kind: str = ""  # "pdf" | "docx" | "md" | "txt" | "pasted"
+    chars: int = 0
+    added_at: str = ""
+
+
+@dataclass
+class JobSpec:
+    """``jobs/<job>/job.json`` (D28): the source a new interview bundle is created from.
+
+    Holds no candidate data (D28): no CV text, no ``cv_tailored`` question, no answers."""
+
+    title: str
+    slug: str = ""
+    languages: Languages = field(default_factory=Languages)
+    requirements: list[Requirement] = field(default_factory=list)
+    questions: list[Question] = field(default_factory=list)
+    plan: InterviewPlan | None = None
+    template_ref: str = ""
+    offer_docs: list[OfferDoc] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    schema_version: int = SCHEMA_VERSION
 
 
 # ── analysis (D17) ────────────────────────────────────────────────────────────────────────

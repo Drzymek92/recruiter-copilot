@@ -1,0 +1,1228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Chair job</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/workspace.css">
+<script src="/static/workspace.js"></script>
+</head>
+<body>
+<header class="top">
+  <span class="brand" id="brand"><a href="/">Second Chair</a></span>
+  <h1 id="job-title">Job</h1>
+  <a class="sub" href="/">← Workspace</a>
+  <div class="toolbar" id="display-host"></div>
+  <p class="disclosure" id="disclosure"></p>
+</header>
+<main class="page">
+  <p class="status err" id="page-status" role="alert" hidden></p>
+  <div class="cols">
+    <section class="card" aria-labelledby="meta-h">
+      <h2 id="meta-h">Job</h2>
+      <form id="meta-form" autocomplete="off">
+        <div class="field">
+          <label for="m-title">Title</label>
+          <input type="text" id="m-title" required maxlength="200">
+        </div>
+        <div class="row">
+          <div class="field narrow"><label for="m-primary">Main language</label><input type="text" id="m-primary" maxlength="3"></div>
+          <div class="field narrow"><label for="m-secondary">Second language</label><input type="text" id="m-secondary" maxlength="3"></div>
+          <div class="field narrow">
+            <label for="m-assess">Assessed language</label>
+            <select id="m-assess"><option value="">none</option><option value="primary">main</option><option value="secondary">second</option></select>
+          </div>
+        </div>
+        <p class="muted">Every question needs a wording in each session language. The assessed language gets a "language check" section.</p>
+        <div class="actions"><button type="submit">Save job details</button></div>
+        <p class="status" id="meta-status" role="status"></p>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="offer-h">
+      <h2 id="offer-h">Offer documents</h2>
+      <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="drop-help">
+        <strong>Drop job documents here</strong>
+        <span class="muted" id="drop-help">or press Enter to choose files — PDF, DOCX, MD or TXT, several at once</span>
+      </div>
+      <input type="file" id="offer-files" multiple accept=".pdf,.docx,.md,.txt" hidden>
+      <ul class="results" id="upload-results" aria-live="polite"></ul>
+      <div class="field" style="margin-top:10px">
+        <label for="paste">Or paste the offer text</label>
+        <textarea id="paste" rows="3"></textarea>
+      </div>
+      <div class="actions"><button type="button" id="paste-add">Add pasted text</button></div>
+      <h3 style="margin-top:12px">In this job</h3>
+      <ul class="results" id="offer-docs"></ul>
+    </section>
+  </div>
+
+  <section class="card" aria-labelledby="prep-h">
+    <h2 id="prep-h">Interview prep</h2>
+    <p class="muted">The model only drafts. Nothing is used until you review and accept it; no candidate is scored at this step.</p>
+    <p class="si1" id="si1-gen" hidden></p>
+    <div class="row">
+      <div class="field narrow"><label for="g-minutes">Minutes</label><input type="number" id="g-minutes" min="6" max="240" step="1"></div>
+      <div class="field narrow"><label for="g-questions">Questions</label><input type="number" id="g-questions" min="1" max="30" step="1"></div>
+      <div class="field" style="flex:0 0 auto"><button type="button" class="primary" id="generate">Generate draft</button></div>
+    </div>
+    <p class="status" id="gen-status" role="status" aria-live="polite"></p>
+    <div class="actions" id="draft-actions"></div>
+    <div class="row" style="margin-top:12px">
+      <div class="field"><label for="tpl-apply">Apply a template to the bank</label><select id="tpl-apply"></select></div>
+      <div class="field" style="flex:0 0 auto"><button type="button" id="tpl-apply-btn">Apply template</button></div>
+      <div class="field"><label for="tpl-name">Save the bank as a template</label><input type="text" id="tpl-name" maxlength="80" placeholder="template name"></div>
+      <div class="field" style="flex:0 0 auto"><button type="button" id="tpl-save-btn">Save as template</button></div>
+    </div>
+    <p class="status" id="tpl-status" role="status"></p>
+  </section>
+
+  <section class="card" id="editor" aria-labelledby="ed-h" hidden>
+    <div class="ed-head"><h2 class="card-h" id="ed-h" tabindex="-1">Editor</h2><span class="muted" id="ed-stats"></span></div>
+    <div id="ed-body"></div>
+    <div class="sticky-actions">
+      <div class="actions" style="margin:0">
+        <button type="button" class="primary" id="ed-accept">Accept</button>
+        <button type="button" id="ed-cancel">Close editor</button>
+        <button type="button" class="danger" id="ed-discard" hidden>Discard draft…</button>
+        <span class="muted" id="ed-dirty"></span>
+      </div>
+      <div id="ed-summary" tabindex="-1"></div>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="iv-h">
+    <h2 id="iv-h">Interviews</h2>
+    <form id="iv-form" autocomplete="off">
+      <h3>Start an interview</h3>
+      <div class="row">
+        <div class="field"><label for="iv-candidate">Candidate name</label><input type="text" id="iv-candidate" required maxlength="200"></div>
+        <div class="field narrow" style="flex-basis:160px"><label for="iv-date">Date</label><input type="date" id="iv-date"></div>
+        <div class="field"><label for="iv-cv">CV (optional)</label><input type="file" id="iv-cv" accept=".pdf,.docx,.md,.txt"></div>
+      </div>
+      <fieldset>
+        <legend>Consent to record (D18)</legend>
+        <div class="row">
+          <div class="field"><label for="iv-informed-by">Who informed the candidate</label><input type="text" id="iv-informed-by" maxlength="200"></div>
+          <div class="field"><label for="iv-method">How</label><input type="text" id="iv-method" list="consent-methods" maxlength="200" placeholder="e.g. verbal at call start"></div>
+        </div>
+        <label class="inline"><input type="checkbox" id="iv-agreed"> The candidate agreed to the recording and to this assistant</label>
+        <p class="muted">The cockpit stays closed until consent is recorded. You can record it later on the interview row.</p>
+      </fieldset>
+      <div class="actions"><button type="submit" class="primary">Create interview</button></div>
+      <p class="status" id="iv-status" role="status"></p>
+    </form>
+    <datalist id="consent-methods">
+      <option value="verbal at call start"></option>
+      <option value="email before the call"></option>
+      <option value="written consent form"></option>
+    </datalist>
+    <h3 style="margin-top:14px">Interviews for this job</h3>
+    <ul class="plain" id="interviews"></ul>
+  </section>
+</main>
+<script>
+"use strict";
+const SLUG = decodeURIComponent(window.location.pathname.split("/").filter(Boolean)[1] || "");
+const API = "/api/jobs/" + encodeURIComponent(SLUG);
+let JOB = null;        // GET /api/jobs/<slug>
+let ED = null;         // the open editor (draft or bank)
+let CV = {};           // interview name → open CV-draft editor state
+let POLL = null;       // the running model task being polled
+let uidN = 0;
+const uid = () => "u" + (++uidN);
+
+function langs() {
+  const l = JOB.spec.languages;
+  return l.secondary && l.secondary !== l.primary ? [l.primary, l.secondary] : [l.primary];
+}
+function pageError(text) {
+  const el = document.getElementById("page-status");
+  el.hidden = !text;
+  el.textContent = text || "";
+}
+
+// ── load + header ───────────────────────────────────────────────────────────────────────────
+async function loadJob() {
+  try {
+    JOB = await api("GET", API);
+  } catch (e) {
+    pageError(e.status === 404 ? "No such job in this workspace." : errText(e));
+    return false;
+  }
+  pageError("");
+  const s = JOB.spec;
+  document.title = s.title + " — Second Chair";
+  document.getElementById("job-title").textContent = s.title;
+  const d = JOB.disclosure;
+  document.getElementById("disclosure").textContent =
+    "Profile " + d.profile + " · drafts by " + d.chat_provider +
+    (d.data_left_machine ? " — documents leave this machine" : " — nothing leaves this machine");
+  const si1 = document.getElementById("si1-gen");
+  si1.hidden = !d.line;
+  si1.textContent = d.line || "";
+  renderMeta();
+  renderOffer();
+  renderPrep();
+  renderInterviews();
+  return true;
+}
+
+function renderMeta() {
+  const s = JOB.spec;
+  document.getElementById("m-title").value = s.title;
+  document.getElementById("m-primary").value = s.languages.primary || "";
+  document.getElementById("m-secondary").value = s.languages.secondary || "";
+  const a = s.languages.assess_language;
+  document.getElementById("m-assess").value =
+    !a ? "" : (a === s.languages.primary ? "primary" : "secondary");
+}
+
+document.getElementById("meta-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const st = document.getElementById("meta-status");
+  const primary = document.getElementById("m-primary").value.trim();
+  const secondary = document.getElementById("m-secondary").value.trim();
+  const which = document.getElementById("m-assess").value;
+  try {
+    await api("POST", API + "/meta", {
+      title: document.getElementById("m-title").value,
+      primary: primary, secondary: secondary,
+      assess_language: which === "primary" ? primary : (which === "secondary" ? secondary : ""),
+    });
+    setStatus(st, "ok", "Saved.");
+    await loadJob();
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+  }
+});
+
+// ── offer documents ─────────────────────────────────────────────────────────────────────────
+function renderOffer() {
+  const docs = JOB.spec.offer_docs;
+  document.getElementById("offer-docs").innerHTML = docs.length
+    ? docs.map((d) => '<li class="ok">' + escapeHtml(d.name) + ' <span class="muted">· ' + escapeHtml(d.kind) +
+        ' · ' + escapeHtml(d.chars) + ' characters</span></li>').join("")
+    : '<li>No offer documents yet — the draft is made from them.</li>';
+}
+
+async function uploadAll(files) {
+  const out = document.getElementById("upload-results");
+  for (const file of files) {
+    const li = document.createElement("li");
+    li.textContent = file.name + " — reading…";
+    out.appendChild(li);
+    try {
+      const r = await uploadFile(API + "/offer", file, JOB.max_upload_mb);
+      const doc = r.docs[0];
+      li.className = "ok";
+      li.textContent = "✓ " + file.name + " — " + doc.chars + " characters extracted (stored as " + doc.name + ")";
+    } catch (e) {
+      li.className = "err";
+      const msg = errText(e);  // intake messages usually start with the file name already
+      li.textContent = "✗ " + (msg.startsWith(file.name) ? msg : file.name + " — " + msg);
+    }
+  }
+  await loadJob();
+}
+
+const drop = document.getElementById("drop");
+const picker = document.getElementById("offer-files");
+drop.addEventListener("click", () => picker.click());
+drop.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); picker.click(); }
+});
+drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  drop.classList.remove("over");
+  if (ev.dataTransfer && ev.dataTransfer.files.length) uploadAll(Array.from(ev.dataTransfer.files));
+});
+picker.addEventListener("change", () => {
+  if (picker.files.length) uploadAll(Array.from(picker.files));
+  picker.value = "";
+});
+document.getElementById("paste-add").addEventListener("click", async () => {
+  const box = document.getElementById("paste");
+  const out = document.getElementById("upload-results");
+  const li = document.createElement("li");
+  try {
+    const r = await api("POST", API + "/paste", { text: box.value });
+    li.className = "ok";
+    li.textContent = "✓ pasted text — " + r.docs[0].chars + " characters (stored as " + r.docs[0].name + ")";
+    box.value = "";
+  } catch (e) {
+    li.className = "err";
+    li.textContent = "✗ pasted text — " + errText(e);
+  }
+  out.appendChild(li);
+  await loadJob();
+});
+
+// ── prep: generate, draft, templates ────────────────────────────────────────────────────────
+function renderPrep() {
+  const g = document.getElementById("g-minutes");
+  if (!g.value) g.value = (JOB.spec.plan && JOB.spec.plan.target_minutes) || JOB.defaults.target_minutes;
+  const n = document.getElementById("g-questions");
+  if (!n.value) n.value = JOB.defaults.n_questions;
+  const acts = document.getElementById("draft-actions");
+  let html = "";
+  if (JOB.has_draft) html += '<button type="button" class="primary" data-act="review-draft">Review the pending draft</button>';
+  if (JOB.spec.questions.length) {
+    html += '<button type="button" data-act="edit-bank">Edit the question bank (' + escapeHtml(JOB.spec.questions.length) + ')</button>';
+  } else if (!JOB.has_draft) {
+    html += '<span class="muted">No accepted questions yet: generate a draft, or apply a template.</span>';
+  }
+  acts.innerHTML = html;
+  const sel = document.getElementById("tpl-apply");
+  sel.innerHTML = JOB.templates.length
+    ? JOB.templates.map((t) => '<option value="' + escapeHtml(t.slug) + '">' + escapeHtml(t.name) + ' (' +
+        escapeHtml(t.questions) + ')</option>').join("")
+    : '<option value="">no templates yet</option>';
+  updatePrepButtons();
+  const t = JOB.task;  // a model task still running (e.g. after a reload) — resume its progress
+  if (t && !POLL && (t.target === SLUG || t.target.startsWith(SLUG + "/"))) watchTask(t);
+}
+
+function updatePrepButtons() {
+  const busy = !!POLL;
+  const dirty = !!(ED && ED.dirty);
+  document.getElementById("generate").disabled = busy || !JOB.spec.offer_docs.length;
+  document.getElementById("tpl-apply-btn").disabled = dirty || !JOB.templates.length;
+  document.getElementById("tpl-save-btn").disabled = dirty || !JOB.spec.questions.length;
+  document.querySelectorAll('button[data-act="tailor"]').forEach((b) => { b.disabled = busy; });
+}
+
+document.getElementById("draft-actions").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  if (ED && ED.dirty && !(await confirmDialog("Leave the open editor?",
+      "Your edits in the open editor are not saved.", "Discard edits"))) return;
+  if (b.dataset.act === "review-draft") openDraft();
+  if (b.dataset.act === "edit-bank") openBank();
+});
+
+document.getElementById("generate").addEventListener("click", async () => {
+  const st = document.getElementById("gen-status");
+  try {
+    const task = await api("POST", API + "/generate", {
+      target_minutes: Number(document.getElementById("g-minutes").value),
+      n_questions: Number(document.getElementById("g-questions").value),
+    });
+    watchTask(task);
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+  }
+});
+
+function taskLine(t) {
+  const what = t.kind === "tailor" ? "Tailoring questions from the CV" : "Drafting requirements, questions and a plan";
+  const call = t.calls <= 1 ? "model call 1 of up to 2 (first draft)"
+    : "model call 2 of 2 (repair: the first draft failed some checks)";
+  return what + " — " + Math.round(t.elapsed_s) + " s · " + call + ". This takes about a minute on a local model.";
+}
+
+function taskStatusEl(t) {
+  if (t.kind === "tailor") {
+    const name = t.target.split("/")[1];
+    const el = document.querySelector('[data-iv-status="' + CSS.escape(name) + '"]');
+    if (el) return el;
+  }
+  return document.getElementById("gen-status");
+}
+
+function watchTask(task) {
+  POLL = task;
+  updatePrepButtons();
+  const tick = async () => {
+    let t;
+    try {
+      t = await api("GET", "/api/tasks/" + encodeURIComponent(task.id));
+    } catch (e) {
+      setStatus(taskStatusEl(task), "err", errText(e));
+      POLL = null;
+      updatePrepButtons();
+      return;
+    }
+    const el = taskStatusEl(t);
+    if (t.state === "running") {
+      setStatus(el, "busy", taskLine(t));
+      setTimeout(tick, 1500);
+      return;
+    }
+    POLL = null;
+    const ok = t.state === "done";
+    const msg = ok
+      ? (t.kind === "tailor" ? "Tailored questions ready" : "Draft ready") + " after " +
+        Math.round(t.elapsed_s) + " s (" + t.calls + " model call" + (t.calls === 1 ? "" : "s") + "). " +
+        (t.kind === "tailor" ? "Use “Review tailored questions”" : "Use “Review the pending draft”") +
+        " — nothing is used until you accept."
+      : (t.kind === "tailor" ? "Tailoring failed: " : "No draft: ") + t.error +
+        (t.reasons.length ? " — " + t.reasons.slice(0, 6).join("; ") : "");
+    await loadJob();  // re-renders the rows: set the status on the fresh element
+    setStatus(taskStatusEl(t), ok ? "ok" : "err", msg);
+  };
+  setStatus(taskStatusEl(task), "busy", taskLine(task));
+  setTimeout(tick, 1000);
+}
+
+document.getElementById("tpl-apply-btn").addEventListener("click", async () => {
+  const st = document.getElementById("tpl-status");
+  const name = document.getElementById("tpl-apply").value;
+  if (!name) return;
+  try {
+    const r = await api("POST", API + "/apply-template", { name: name });
+    setStatus(st, "ok", "Applied: " + r.added.length + " question(s) added to the bank (" + r.added.join(", ") +
+      "). Open the bank editor to place them in the plan.");
+    if (ED && ED.mode === "bank") closeEditor();
+    await loadJob();
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+  }
+});
+
+document.getElementById("tpl-save-btn").addEventListener("click", async () => {
+  const st = document.getElementById("tpl-status");
+  const name = document.getElementById("tpl-name").value.trim();
+  if (!name) { setStatus(st, "err", "Give the template a name."); return; }
+  const save = async (overwrite) => api("POST", API + "/template", { name: name, overwrite: overwrite });
+  try {
+    let r;
+    try {
+      r = await save(false);
+    } catch (e) {
+      if (!/exists/.test(errText(e))) throw e;
+      if (!(await confirmDialog("Replace the template?", "A template with this name exists.", "Replace", "templates/" + name))) return;
+      r = await save(true);
+    }
+    setStatus(st, "ok", "Saved template “" + r.slug + "”. " + (r.left_out.length
+      ? "Left out " + r.left_out.length + " CV-tailored question(s): " + r.left_out.join(", ") + "."
+      : "No CV-tailored questions were left out — they never enter a job's bank (only an interview's)."));
+    await loadJob();
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+  }
+});
+
+// ── the editor (draft → edit → accept, or the accepted bank) ────────────────────────────────
+function toEdQuestion(q) {
+  const text = {};
+  langs().forEach((l) => { text[l] = (q.text && q.text[l]) || ""; });
+  return {
+    uid: uid(), id: q.id, text: text, intent: q.intent || "",
+    signals: (q.expected_signals || []).join("\n"),
+    requirement_ids: (q.requirement_ids || []).slice(),
+    assesses_language: !!q.assesses_language,
+  };
+}
+function toEdReq(r) {
+  return {
+    uid: uid(), id: r.id, text: r.text || "", kind: r.kind || "must",
+    weight: r.weight == null ? "" : String(r.weight), source_quote: r.source_quote || "",
+    grounded: r.grounded === undefined ? null : r.grounded,
+  };
+}
+function evenMinutes(n, target) {
+  const base = Math.floor(target / n);
+  const out = Array(n).fill(base);
+  for (let i = 0; i < target - base * n; i++) out[i] += 1;
+  return out;
+}
+function buildEditor(mode, reqs, questions, plan, target, extra) {
+  const byId = {};
+  const qs = questions.map(toEdQuestion);
+  qs.forEach((q) => { byId[q.id] = q; });
+  let sections = [];
+  let note = "";
+  if (plan && plan.sections && plan.sections.length) {
+    sections = plan.sections.map((s) => ({
+      uid: uid(), name: s.name, minutes: String(s.minutes),
+      qs: s.question_ids.map((id) => byId[id]).filter(Boolean),
+    }));
+  } else {
+    const mins = evenMinutes(JOB.plan_sections.length, target);
+    sections = JOB.plan_sections.map((name, i) => ({ uid: uid(), name: name, minutes: String(mins[i]), qs: [] }));
+    note = "There was no plan yet: the six sections were added with an even split. Adjust the minutes and place the questions.";
+  }
+  const placed = new Set();
+  sections.forEach((s) => s.qs.forEach((q) => placed.add(q.uid)));
+  const loose = qs.filter((q) => !placed.has(q.uid));
+  if (loose.length) {
+    sections.unshift({ uid: "unplaced", name: "not in the plan yet", minutes: "", qs: loose, unplaced: true });
+  }
+  ED = Object.assign({
+    mode: mode, target: String(target), requirements: reqs.map(toEdReq), sections: sections,
+    dirty: false, errors: {}, general: [], note: note,
+  }, extra || {});
+}
+
+async function openDraft() {
+  try {
+    const d = await api("GET", API + "/draft");
+    buildEditor("draft", d.requirements, d.questions, d.plan, d.target_minutes, { stats: d.stats, ungrounded: d.ungrounded });
+    showEditor();
+  } catch (e) {
+    setStatus(document.getElementById("gen-status"), "err", errText(e));
+  }
+}
+function openBank() {
+  const s = JOB.spec;
+  const target = (s.plan && s.plan.target_minutes) || JOB.defaults.target_minutes;
+  buildEditor("bank", s.requirements, s.questions, s.plan, target, {});
+  showEditor();
+}
+function showEditor() {
+  const sec = document.getElementById("editor");
+  sec.hidden = false;
+  document.getElementById("ed-h").textContent = ED.mode === "draft" ? "Review the draft" : "Question bank";
+  document.getElementById("ed-accept").textContent = ED.mode === "draft" ? "Accept into the job" : "Save the bank";
+  document.getElementById("ed-discard").hidden = ED.mode !== "draft";
+  const st = ED.stats;
+  document.getElementById("ed-stats").textContent = st
+    ? (st.model || "model") + " · " + st.calls + " call(s) · " + Math.round(st.wall_seconds) + " s" +
+      (st.repair_used ? " · repaired once" : "") + (st.rescaled ? " · minutes rescaled" : "")
+    : "";
+  renderEditor();
+  sec.scrollIntoView({ block: "start", behavior: "auto" });
+  document.getElementById("ed-h").focus();
+}
+function closeEditor() {
+  ED = null;
+  document.getElementById("editor").hidden = true;
+  updatePrepButtons();
+}
+function markDirty() {
+  if (!ED.dirty) {
+    ED.dirty = true;
+    document.getElementById("ed-dirty").textContent = "Unsaved changes";
+    updatePrepButtons();
+  }
+}
+window.addEventListener("beforeunload", (ev) => {
+  if (ED && ED.dirty) { ev.preventDefault(); ev.returnValue = ""; }
+});
+
+function allQs() {
+  const out = [];
+  ED.sections.forEach((s) => s.qs.forEach((q) => out.push(q)));
+  return out;
+}
+function nextId(prefix, taken) {
+  let n = 1;
+  while (taken.has(prefix + n)) n++;
+  return prefix + n;
+}
+function totalMinutes() {
+  return ED.sections.filter((s) => !s.unplaced).reduce((a, s) => a + (Number(s.minutes) || 0), 0);
+}
+function updateTotal() {
+  const el = document.getElementById("ed-total");
+  if (!el) return;
+  const total = totalMinutes();
+  const target = Number(ED.target) || 0;
+  el.textContent = total + " of " + target + " min";
+  el.classList.toggle("off", total !== target);
+  const hint = document.getElementById("ed-total-hint");
+  hint.textContent = total === target ? "adds up" : "does not add up — on save the minutes are rescaled to the target in code";
+}
+
+function errsHtml(list) {
+  if (!list || !list.length) return "";
+  return list.map((m) => '<p class="field-err">' + escapeHtml(m) + '</p>').join("");
+}
+function fieldErrs(u, f) {
+  return (ED.errors[u] && ED.errors[u][f]) || [];
+}
+function invalidAttrHtml(u, f) {
+  return fieldErrs(u, f).length ? ' aria-invalid="true"' : "";
+}
+
+function reqHtml(r) {
+  const flagHtml = r.grounded === false
+    ? '<span class="chip warn">quote not found in the offer — check it</span>'
+    : (r.grounded === true ? '<span class="chip ok">quote found in the offer</span>' : '<span class="chip">not checked yet</span>');
+  return '<li class="req' + (r.grounded === false ? ' ungrounded' : '') + '" data-uid="' + escapeHtml(r.uid) + '">' +
+    '<div class="q-top" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">' +
+    '<span class="idtag">' + escapeHtml(r.id) + '</span>' + flagHtml +
+    '<button type="button" class="small danger" style="margin-left:auto" data-uid="' + escapeHtml(r.uid) + '" data-act="req-remove">Remove</button></div>' +
+    errsHtml(fieldErrs(r.uid, "_")) +
+    '<div class="grid"><div class="field"><label for="f-' + escapeHtml(r.uid) + '-text">Requirement</label>' +
+    '<input type="text" id="f-' + escapeHtml(r.uid) + '-text" data-uid="' + escapeHtml(r.uid) + '" data-field="text" value="' + escapeHtml(r.text) + '"' + invalidAttrHtml(r.uid, "text") + '>' +
+    errsHtml(fieldErrs(r.uid, "text")) + '</div>' +
+    '<div class="field"><label for="f-' + escapeHtml(r.uid) + '-kind">Kind</label>' +
+    '<select id="f-' + escapeHtml(r.uid) + '-kind" data-uid="' + escapeHtml(r.uid) + '" data-field="kind"' + invalidAttrHtml(r.uid, "kind") + '>' +
+    '<option value="must"' + (r.kind === "must" ? " selected" : "") + '>must</option>' +
+    '<option value="nice"' + (r.kind === "nice" ? " selected" : "") + '>nice to have</option></select>' +
+    errsHtml(fieldErrs(r.uid, "kind")) + '</div>' +
+    '<div class="field"><label for="f-' + escapeHtml(r.uid) + '-weight">Weight</label>' +
+    '<input type="number" min="0.5" max="3" step="0.5" id="f-' + escapeHtml(r.uid) + '-weight" data-uid="' + escapeHtml(r.uid) + '" data-field="weight" value="' + escapeHtml(r.weight) + '"' + invalidAttrHtml(r.uid, "weight") + '>' +
+    errsHtml(fieldErrs(r.uid, "weight")) + '</div></div>' +
+    '<div class="field"><label for="f-' + escapeHtml(r.uid) + '-quote">Source quote (words from the offer)</label>' +
+    '<textarea rows="1" id="f-' + escapeHtml(r.uid) + '-quote" data-uid="' + escapeHtml(r.uid) + '" data-field="source_quote">' + escapeHtml(r.source_quote) + '</textarea></div></li>';
+}
+
+function sectionOptionsHtml(current) {
+  return ED.sections.filter((s) => !s.unplaced).map((s) =>
+    '<option value="' + escapeHtml(s.uid) + '"' + (s.uid === current ? " selected" : "") + '>' + escapeHtml(s.name) + '</option>').join("") +
+    (current === "unplaced" ? '<option value="unplaced" selected>not in the plan yet</option>' : "");
+}
+
+function questionHtml(q, sec, i) {
+  const u = escapeHtml(q.uid);
+  const wordingsHtml = langs().map((l) =>
+    '<div class="field"><label for="f-' + u + '-text-' + escapeHtml(l) + '">Wording — ' + escapeHtml(langLabel(l)) + '</label>' +
+    '<textarea rows="2" id="f-' + u + '-text-' + escapeHtml(l) + '" data-uid="' + u + '" data-field="wording" data-lang="' + escapeHtml(l) + '"' +
+    invalidAttrHtml(q.uid, "text-" + l) + '>' + escapeHtml(q.text[l] || "") + '</textarea>' + errsHtml(fieldErrs(q.uid, "text-" + l)) + '</div>').join("");
+  const linksHtml = ED.requirements.length
+    ? ED.requirements.map((r) =>
+      '<label class="inline"><input type="checkbox" data-uid="' + u + '" data-field="link" data-rid="' + escapeHtml(r.id) + '"' +
+      (q.requirement_ids.includes(r.id) ? " checked" : "") + '> ' + escapeHtml(r.id) + ' ' + escapeHtml(r.text.slice(0, 48)) + '</label>').join("")
+    : '<span class="muted">no requirements</span>';
+  return '<li class="q" data-uid="' + u + '">' +
+    '<div class="q-top"><span class="idtag">' + escapeHtml(q.id) + '</span>' +
+    (q.assesses_language ? '<span class="chip info">assesses language</span>' : '') +
+    '<button type="button" class="small icon" data-uid="' + u + '" data-act="q-up" aria-label="Move ' + escapeHtml(q.id) + ' up"' + (i === 0 ? " disabled" : "") + '>↑</button>' +
+    '<button type="button" class="small icon" data-uid="' + u + '" data-act="q-down" aria-label="Move ' + escapeHtml(q.id) + ' down"' + (i === sec.qs.length - 1 ? " disabled" : "") + '>↓</button>' +
+    '<label class="inline" for="f-' + u + '-sec">Section <select id="f-' + u + '-sec" data-uid="' + u + '" data-field="section" style="width:auto">' + sectionOptionsHtml(sec.uid) + '</select></label>' +
+    '<button type="button" class="small danger" data-uid="' + u + '" data-act="q-remove">Remove</button></div>' +
+    errsHtml(fieldErrs(q.uid, "_")) +
+    '<div class="grid two">' + wordingsHtml + '</div>' +
+    '<div class="grid two"><div class="field"><label for="f-' + u + '-intent">Intent — what it finds out</label>' +
+    '<input type="text" id="f-' + u + '-intent" data-uid="' + u + '" data-field="intent" value="' + escapeHtml(q.intent) + '"' + invalidAttrHtml(q.uid, "intent") + '>' +
+    errsHtml(fieldErrs(q.uid, "intent")) + '</div>' +
+    '<div class="field"><label for="f-' + u + '-signals">Expected signals (one per line)</label>' +
+    '<textarea rows="2" id="f-' + u + '-signals" data-uid="' + u + '" data-field="signals"' + invalidAttrHtml(q.uid, "signals") + '>' + escapeHtml(q.signals) + '</textarea>' +
+    errsHtml(fieldErrs(q.uid, "signals")) + '</div></div>' +
+    '<fieldset><legend>Requirements it probes</legend><div class="links">' + linksHtml + '</div>' + errsHtml(fieldErrs(q.uid, "links")) + '</fieldset>' +
+    '<label class="inline"><input type="checkbox" data-uid="' + u + '" data-field="assesses"' + (q.assesses_language ? " checked" : "") +
+    '> Asked to hear the candidate use the assessed language</label></li>';
+}
+
+function sectionHtml(s, i, realCount) {
+  const u = escapeHtml(s.uid);
+  const headHtml = s.unplaced
+    ? '<div class="sec-head"><h3>Not in the plan yet</h3><span class="chip warn">move each question to a section</span></div>'
+    : '<div class="sec-head"><h3>' + escapeHtml(s.name) + '</h3>' +
+      '<label class="inline" for="f-' + u + '-minutes">Minutes <input class="mins" type="number" min="1" max="240" step="1" id="f-' + u + '-minutes" data-uid="' + u + '" data-field="minutes" value="' + escapeHtml(s.minutes) + '"' + invalidAttrHtml(s.uid, "minutes") + '></label>' +
+      '<button type="button" class="small icon" data-uid="' + u + '" data-act="s-up" aria-label="Move section ' + escapeHtml(s.name) + ' up"' + (i === 0 ? " disabled" : "") + '>↑</button>' +
+      '<button type="button" class="small icon" data-uid="' + u + '" data-act="s-down" aria-label="Move section ' + escapeHtml(s.name) + ' down"' + (i === realCount - 1 ? " disabled" : "") + '>↓</button>' +
+      '<button type="button" class="small danger" data-uid="' + u + '" data-act="s-remove"' + (s.qs.length ? ' disabled title="Move its questions out first"' : '') + '>Remove section</button></div>';
+  const qsHtml = s.qs.length ? '<ol class="plain">' + s.qs.map((q, j) => questionHtml(q, s, j)).join("") + '</ol>'
+    : '<p class="empty">No questions in this section.</p>';
+  return '<div class="sec" data-sec="' + u + '">' + headHtml + errsHtml(fieldErrs(s.uid, "_")) + errsHtml(fieldErrs(s.uid, "minutes")) + qsHtml +
+    (s.unplaced ? '' : '<div class="actions"><button type="button" class="small" data-uid="' + u + '" data-act="q-add">Add a question here</button></div>') + '</div>';
+}
+
+function renderEditor(focus) {
+  const host = document.getElementById("ed-body");
+  const modeHtml = ED.mode === "draft"
+    ? '<p class="mode">Pending draft — not used until you accept. Accepted questions are ADDED to this job&#39;s bank' +
+      (JOB.spec.questions.length ? ' (it has ' + escapeHtml(JOB.spec.questions.length) + ' already)' : '') + '.</p>'
+    : '<p class="mode bank">The accepted question bank of this job. Saving re-runs the same checks; nothing is saved if one fails.</p>';
+  const ungroundedHtml = (ED.ungrounded && ED.ungrounded.length)
+    ? '<p class="status busy">' + escapeHtml(ED.ungrounded.length) + ' requirement(s) quote words not found in the offer: ' + escapeHtml(ED.ungrounded.join(", ")) + ' — kept and flagged; you decide.</p>' : '';
+  const real = ED.sections.filter((s) => !s.unplaced);
+  const missing = JOB.plan_sections.filter((n) => !real.some((s) => s.name === n));
+  let ri = -1;
+  host.innerHTML = modeHtml + ungroundedHtml + (ED.note ? '<p class="status">' + escapeHtml(ED.note) + '</p>' : '') +
+    '<h3>Requirements</h3>' + errsHtml(ED.generalReq) +
+    '<ul class="plain">' + ED.requirements.map(reqHtml).join("") + '</ul>' +
+    '<div class="actions"><button type="button" class="small" data-act="req-add">Add a requirement</button></div>' +
+    '<h3 style="margin-top:14px">Plan and questions</h3>' +
+    '<div class="row"><div class="field narrow"><label for="ed-target">Target minutes</label>' +
+    '<input type="number" id="ed-target" min="6" max="240" step="1" data-field="target" value="' + escapeHtml(ED.target) + '"></div>' +
+    '<div class="field"><p style="margin:0 0 6px">Total: <span class="total" id="ed-total"></span> <span class="muted" id="ed-total-hint"></span></p></div></div>' +
+    errsHtml(ED.generalPlan) + errsHtml(ED.generalQ) +
+    ED.sections.map((s) => { if (!s.unplaced) ri++; return sectionHtml(s, s.unplaced ? -1 : ri, real.length); }).join("") +
+    (missing.length ? '<div class="row" style="margin-top:10px"><div class="field"><label for="ed-add-sec">Add a section</label><select id="ed-add-sec">' +
+      missing.map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>').join("") +
+      '</select></div><div class="field" style="flex:0 0 auto"><button type="button" class="small" data-act="s-add">Add section</button></div></div>' : '');
+  updateTotal();
+  renderSummary();
+  if (focus) {
+    let el = host.querySelector('[data-uid="' + CSS.escape(focus.uid) + '"][data-act="' + CSS.escape(focus.act) + '"]');
+    if (el && el.disabled) {
+      const other = focus.act.endsWith("-up") ? focus.act.replace("-up", "-down") : focus.act.replace("-down", "-up");
+      el = host.querySelector('[data-uid="' + CSS.escape(focus.uid) + '"][data-act="' + CSS.escape(other) + '"]');
+    }
+    if (!el && focus.uid) el = host.querySelector('[data-uid="' + CSS.escape(focus.uid) + '"] textarea, [data-uid="' + CSS.escape(focus.uid) + '"] input');
+    if (el) el.focus();
+  }
+}
+
+function renderSummary() {
+  const host = document.getElementById("ed-summary");
+  const n = ED.errorCount || 0;
+  host.innerHTML = n
+    ? '<p class="status err">' + escapeHtml(n) + ' problem(s) — nothing was saved. Each is shown next to its field:</p><ul class="errs">' +
+      ED.errorList.map((m) => '<li>' + escapeHtml(m) + '</li>').join("") + '</ul>'
+    : (ED.saved ? '<p class="status ok">' + escapeHtml(ED.saved) + '</p>' : '');
+}
+
+function findSec(u) { return ED.sections.find((s) => s.uid === u); }
+function findQ(u) {
+  for (const s of ED.sections) {
+    const i = s.qs.findIndex((q) => q.uid === u);
+    if (i >= 0) return { sec: s, i: i, q: s.qs[i] };
+  }
+  return null;
+}
+function findReq(u) { return ED.requirements.find((r) => r.uid === u); }
+
+document.getElementById("ed-body").addEventListener("input", (ev) => {
+  const el = ev.target;
+  const f = el.dataset.field;
+  if (!f) return;
+  if (f === "target") { ED.target = el.value; markDirty(); updateTotal(); return; }
+  const u = el.dataset.uid;
+  const r = findReq(u);
+  if (r) {
+    if (f === "text") r.text = el.value;
+    else if (f === "weight") r.weight = el.value;
+    else if (f === "source_quote") { r.source_quote = el.value; r.grounded = null; }
+    else return;
+    markDirty();
+    return;
+  }
+  if (f === "minutes") { findSec(u).minutes = el.value; markDirty(); updateTotal(); return; }
+  const hit = findQ(u);
+  if (!hit) return;
+  if (f === "wording") hit.q.text[el.dataset.lang] = el.value;
+  else if (f === "intent") hit.q.intent = el.value;
+  else if (f === "signals") hit.q.signals = el.value;
+  else return;
+  markDirty();
+});
+
+document.getElementById("ed-body").addEventListener("change", (ev) => {
+  const el = ev.target;
+  const f = el.dataset.field;
+  const u = el.dataset.uid;
+  if (f === "kind") { findReq(u).kind = el.value; markDirty(); return; }
+  const hit = findQ(u);
+  if (!hit) return;
+  if (f === "link") {
+    const ids = hit.q.requirement_ids.filter((x) => x !== el.dataset.rid);
+    if (el.checked) ids.push(el.dataset.rid);
+    hit.q.requirement_ids = ids;
+    markDirty();
+  } else if (f === "assesses") {
+    hit.q.assesses_language = el.checked;
+    markDirty();
+    renderEditor({ uid: u, act: "q-remove" });
+  } else if (f === "section") {
+    const dest = findSec(el.value);
+    if (!dest || dest === hit.sec) return;
+    hit.sec.qs.splice(hit.i, 1);
+    dest.qs.push(hit.q);
+    dropEmptyUnplaced();
+    markDirty();
+    renderEditor({ uid: u, act: "q-up" });
+  }
+});
+
+function dropEmptyUnplaced() {
+  ED.sections = ED.sections.filter((s) => !(s.unplaced && !s.qs.length));
+}
+
+document.getElementById("ed-body").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  const act = b.dataset.act;
+  const u = b.dataset.uid;
+  if (act === "req-add") {
+    const r = toEdReq({ id: nextId("r", new Set(ED.requirements.map((x) => x.id))), text: "", kind: "must", weight: 1 });
+    r.grounded = null;
+    ED.requirements.push(r);
+    markDirty();
+    renderEditor({ uid: r.uid, act: "" });
+    return;
+  }
+  if (act === "req-remove") {
+    const r = findReq(u);
+    ED.requirements = ED.requirements.filter((x) => x.uid !== u);
+    allQs().forEach((q) => { q.requirement_ids = q.requirement_ids.filter((x) => x !== r.id); });
+    markDirty();
+    renderEditor();
+    document.querySelector('[data-act="req-add"]').focus();
+    return;
+  }
+  if (act === "q-add") {
+    const sec = findSec(u);
+    const q = toEdQuestion({ id: nextId("q", new Set(allQs().map((x) => x.id))), text: {}, requirement_ids: [] });
+    sec.qs.push(q);
+    markDirty();
+    renderEditor({ uid: q.uid, act: "" });
+    return;
+  }
+  if (act === "q-remove") {
+    const hit = findQ(u);
+    hit.sec.qs.splice(hit.i, 1);
+    dropEmptyUnplaced();
+    markDirty();
+    const next = hit.sec.qs[hit.i] || hit.sec.qs[hit.i - 1];
+    renderEditor(next ? { uid: next.uid, act: "q-remove" } : null);
+    if (!next) {
+      const add = document.querySelector('[data-act="q-add"][data-uid="' + CSS.escape(hit.sec.uid) + '"]');
+      if (add) add.focus();
+    }
+    return;
+  }
+  if (act === "q-up" || act === "q-down") {
+    const hit = findQ(u);
+    const j = act === "q-up" ? hit.i - 1 : hit.i + 1;
+    if (j < 0 || j >= hit.sec.qs.length) return;
+    hit.sec.qs.splice(hit.i, 1);
+    hit.sec.qs.splice(j, 0, hit.q);
+    markDirty();
+    renderEditor({ uid: u, act: act });
+    return;
+  }
+  if (act === "s-up" || act === "s-down") {
+    const i = ED.sections.findIndex((s) => s.uid === u);
+    let j = act === "s-up" ? i - 1 : i + 1;
+    if (j < 0 || j >= ED.sections.length || ED.sections[j].unplaced) return;
+    const [s] = ED.sections.splice(i, 1);
+    ED.sections.splice(j, 0, s);
+    markDirty();
+    renderEditor({ uid: u, act: act });
+    return;
+  }
+  if (act === "s-remove") {
+    ED.sections = ED.sections.filter((s) => s.uid !== u);
+    markDirty();
+    renderEditor();
+    return;
+  }
+  if (act === "s-add") {
+    const name = document.getElementById("ed-add-sec").value;
+    const s = { uid: uid(), name: name, minutes: "5", qs: [] };
+    const order = JOB.plan_sections;
+    let at = ED.sections.length;
+    for (let k = 0; k < ED.sections.length; k++) {
+      if (!ED.sections[k].unplaced && order.indexOf(ED.sections[k].name) > order.indexOf(name)) { at = k; break; }
+    }
+    ED.sections.splice(at, 0, s);
+    markDirty();
+    renderEditor({ uid: s.uid, act: "s-up" });
+  }
+});
+
+// The editor in the validator's shape; index maps let the reasons land on their fields.
+function editorPayload() {
+  const qOrder = [];
+  ED.sections.forEach((s) => s.qs.forEach((q) => qOrder.push(q)));
+  const real = ED.sections.filter((s) => !s.unplaced);
+  const num = (v) => (v === "" || v == null || isNaN(Number(v))) ? v : Number(v);
+  return {
+    qOrder: qOrder, real: real,
+    body: {
+      target_minutes: num(ED.target),
+      requirements: ED.requirements.map((r) => ({
+        id: r.id, text: r.text, kind: r.kind, weight: num(r.weight), source_quote: r.source_quote,
+      })),
+      questions: qOrder.map((q) => ({
+        id: q.id, text: Object.assign({}, q.text), intent: q.intent,
+        expected_signals: q.signals.split("\n").map((x) => x.trim()).filter(Boolean),
+        requirement_ids: q.requirement_ids.slice(), assesses_language: q.assesses_language,
+      })),
+      plan: { sections: real.map((s) => ({ name: s.name, minutes: num(s.minutes), question_ids: s.qs.map((q) => q.id) })) },
+    },
+  };
+}
+
+function placeErrors(reasons, qOrder, real) {
+  const errors = {};
+  const put = (u, f, m) => { errors[u] = errors[u] || {}; (errors[u][f] = errors[u][f] || []).push(m); };
+  ED.generalReq = []; ED.generalPlan = []; ED.generalQ = [];
+  reasons.forEach((m) => {
+    let x;
+    if ((x = /^requirements\[(\d+)\]/.exec(m)) && ED.requirements[Number(x[1])]) {
+      const u = ED.requirements[Number(x[1])].uid;
+      put(u, /: text /.test(m) ? "text" : /: kind /.test(m) ? "kind" : /: weight /.test(m) ? "weight" : "_", m);
+    } else if ((x = /^questions\[(\d+)\]/.exec(m)) && qOrder[Number(x[1])]) {
+      const u = qOrder[Number(x[1])].uid;
+      const lang = /session language '([^']+)'/.exec(m);
+      put(u, lang ? "text-" + lang[1] : /intent/.test(m) ? "intent" : /expected_signals/.test(m) ? "signals"
+        : /requirement/.test(m) ? "links" : "_", m);
+    } else if ((x = /^plan\.sections\[(\d+)\]/.exec(m)) && real[Number(x[1])]) {
+      put(real[Number(x[1])].uid, /minutes/.test(m) ? "minutes" : "_", m);
+    } else if ((x = /^plan: question '([^']+)'/.exec(m)) && qOrder.find((q) => q.id === x[1])) {
+      put(qOrder.find((q) => q.id === x[1]).uid, "_", m);
+    } else if (/^requirements/.test(m)) {
+      ED.generalReq.push(m);
+    } else if (/^questions/.test(m)) {
+      ED.generalQ.push(m);
+    } else {
+      ED.generalPlan.push(m);
+    }
+  });
+  ED.errors = errors;
+  ED.errorList = reasons;
+  ED.errorCount = reasons.length;
+}
+
+document.getElementById("ed-accept").addEventListener("click", async () => {
+  const p = editorPayload();
+  const url = ED.mode === "draft" ? API + "/draft/accept" : API + "/bank";
+  const btn = document.getElementById("ed-accept");
+  btn.disabled = true;
+  try {
+    const r = await api("POST", url, p.body);
+    const mode = ED.mode;
+    ED.errors = {}; ED.errorList = []; ED.errorCount = 0; ED.generalReq = []; ED.generalPlan = []; ED.generalQ = [];
+    ED.dirty = false;
+    document.getElementById("ed-dirty").textContent = "";
+    const msg = (mode === "draft"
+      ? "Accepted: " + r.accepted.length + " question(s) added to the bank."
+      : "Saved the question bank.") + (r.rescaled ? " The plan minutes were rescaled to the target." : "");
+    await loadJob();
+    if (mode === "draft") {
+      closeEditor();
+      setStatus(document.getElementById("gen-status"), "ok", msg);
+      document.getElementById("gen-status").scrollIntoView({ block: "center" });
+    } else {
+      openBank();
+      ED.saved = msg;
+      renderSummary();
+    }
+  } catch (e) {
+    if (e.errors && e.errors.length) {
+      placeErrors(e.errors, p.qOrder, p.real);
+    } else {
+      ED.errors = {}; ED.errorList = [errText(e)]; ED.errorCount = 1;
+    }
+    ED.saved = "";
+    renderEditor();
+    document.getElementById("ed-summary").focus();
+  } finally {
+    btn.disabled = false;
+    updatePrepButtons();
+  }
+});
+
+document.getElementById("ed-cancel").addEventListener("click", async () => {
+  if (ED.dirty && !(await confirmDialog("Close the editor?", "Your edits are not saved.", "Discard edits"))) return;
+  closeEditor();
+});
+document.getElementById("ed-discard").addEventListener("click", async () => {
+  if (!(await confirmDialog("Discard the pending draft?", "The generated draft is deleted. The job's bank is not touched.",
+      "Discard draft", "jobs/" + SLUG + "/draft.json"))) return;
+  try {
+    await api("DELETE", API + "/draft");
+    closeEditor();
+    await loadJob();
+  } catch (e) {
+    setStatus(document.getElementById("gen-status"), "err", errText(e));
+  }
+});
+
+// ── interviews ──────────────────────────────────────────────────────────────────────────────
+document.getElementById("iv-date").value = todayIso();
+
+document.getElementById("iv-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const st = document.getElementById("iv-status");
+  const agreed = document.getElementById("iv-agreed").checked;
+  const by = document.getElementById("iv-informed-by").value;
+  const how = document.getElementById("iv-method").value;
+  setStatus(st, "busy", "Creating the interview…");
+  let created;
+  try {
+    created = await api("POST", API + "/interviews", {
+      candidate: document.getElementById("iv-candidate").value,
+      date: document.getElementById("iv-date").value,
+      consent: (agreed || by || how) ? { informed_by: by, method: how, candidate_agreed: agreed } : null,
+    });
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+    return;
+  }
+  let msg = "Created " + created.name + ". " +
+    (created.consent_recorded ? "Consent recorded." : "Consent not recorded yet — the cockpit stays closed until it is.");
+  const cv = document.getElementById("iv-cv").files[0];
+  let kind = "ok";
+  if (cv) {
+    try {
+      const r = await uploadFile("/api/interviews/" + encodeURIComponent(SLUG) + "/" + encodeURIComponent(created.name) + "/cv", cv, JOB.max_upload_mb);
+      msg += " CV stored (" + r.doc.chars + " characters).";
+    } catch (e) {
+      msg += " The CV was refused: " + errText(e) + " — add another on the interview row.";
+      kind = "err";
+    }
+  }
+  document.getElementById("iv-form").reset();
+  document.getElementById("iv-date").value = todayIso();
+  setStatus(st, kind, msg);
+  await loadJob();
+});
+
+function ivUrl(iv, tail) {
+  return "/api/interviews/" + encodeURIComponent(SLUG) + "/" + encodeURIComponent(iv.name) + (tail || "");
+}
+
+function ivHtml(iv) {
+  const n = escapeHtml(iv.name);
+  const chipsHtml = '<span class="chip">' + escapeHtml(iv.status) + '</span>' +
+    (iv.consent_ok ? '<span class="chip ok">consent ok</span>' : '<span class="chip warn">consent missing</span>') +
+    (iv.has_cv ? '<span class="chip">CV</span>' : '<span class="chip">no CV</span>') +
+    (iv.cv_tailored.length ? '<span class="chip info">' + escapeHtml(iv.cv_tailored.length) + ' CV-tailored</span>' : '') +
+    (iv.served ? '<span class="chip info">in a cockpit</span>' : '');
+  const consentFormHtml = iv.consent_ok ? '' :
+    '<fieldset><legend>Record consent</legend><div class="row">' +
+    '<div class="field"><label for="c-' + n + '-by">Who informed the candidate</label><input type="text" id="c-' + n + '-by" data-c="by"></div>' +
+    '<div class="field"><label for="c-' + n + '-how">How</label><input type="text" id="c-' + n + '-how" data-c="how" list="consent-methods"></div></div>' +
+    '<label class="inline"><input type="checkbox" data-c="agreed"> The candidate agreed to the recording and to this assistant</label>' +
+    '<div class="actions"><button type="button" class="small" data-act="consent" data-iv="' + n + '">Record consent</button></div></fieldset>';
+  const cvPartHtml = iv.has_cv
+    ? '<button type="button" class="small" data-act="tailor" data-iv="' + n + '"' + (POLL ? " disabled" : "") + '>Tailor questions from the CV</button>' +
+      (iv.has_cv_draft ? '<button type="button" class="small primary" data-act="cv-review" data-iv="' + n + '">Review tailored questions</button>' : '')
+    : '<label class="inline" for="cv-' + n + '">Add CV <input type="file" id="cv-' + n + '" accept=".pdf,.docx,.md,.txt" data-act-file="cv" data-iv="' + n + '"></label>';
+  const cockpitHtml = iv.cockpit_url
+    ? '<a class="btn primary" href="' + escapeHtml(iv.cockpit_url) + '" target="_blank" rel="noopener">Cockpit tab</a>' +
+      '<button type="button" class="small" data-act="cockpit-stop" data-iv="' + n + '">Stop cockpit</button>'
+    : '<button type="button" class="primary" data-act="cockpit" data-iv="' + n + '"' +
+      (iv.consent_ok && !iv.served ? '' : ' disabled') + '>Open cockpit</button>' +
+      (iv.consent_ok ? (iv.served ? '<span class="muted">served by another process</span>' : '') : '<span class="muted">record consent first</span>');
+  const reportsHtml = iv.reports.length
+    ? '<p class="meta">Reports: ' + iv.reports.map((r) => '<a href="' + escapeHtml(r.url) + '" target="_blank" rel="noopener">' + escapeHtml(r.name) + '</a>').join(" · ") + '</p>'
+    : '';
+  const si1Html = (iv.has_cv && JOB.disclosure.line) ? '<p class="si1">' + escapeHtml(JOB.disclosure.line) + '</p>' : '';
+  return '<li class="item" data-iv-row="' + n + '"><div class="top"><h3>' + escapeHtml(iv.date) + ' · ' + escapeHtml(iv.candidate) + '</h3>' +
+    '<span class="actions" style="margin:0">' + chipsHtml + '</span></div>' +
+    '<p class="meta">' + escapeHtml(iv.questions) + ' question(s) · ' + escapeHtml(iv.name) + '</p>' + reportsHtml + consentFormHtml + si1Html +
+    '<div class="actions">' + cockpitHtml + cvPartHtml + '</div>' +
+    '<p class="status" data-iv-status="' + n + '" role="status"></p>' +
+    '<div data-cv-editor="' + n + '"></div>' +
+    '<details><summary>More</summary><div class="row" style="margin-top:8px">' +
+    '<div class="field"><label for="t-' + n + '">Save this interview&#39;s questions as a template</label><input type="text" id="t-' + n + '" maxlength="80" placeholder="template name"></div>' +
+    '<div class="field" style="flex:0 0 auto"><button type="button" class="small" data-act="iv-template" data-iv="' + n + '">Save as template</button></div></div>' +
+    '<div class="actions"><button type="button" class="small danger" data-act="purge" data-iv="' + n + '">Delete this interview…</button></div></details></li>';
+}
+
+function renderInterviews() {
+  const host = document.getElementById("interviews");
+  host.innerHTML = JOB.interviews.length ? JOB.interviews.map(ivHtml).join("")
+    : '<li class="empty">No interviews yet.</li>';
+  Object.keys(CV).forEach((name) => { if (JOB.interviews.some((iv) => iv.name === name)) renderCvEditor(name); else delete CV[name]; });
+}
+
+function ivByName(name) { return JOB.interviews.find((iv) => iv.name === name); }
+function rowStatus(name) { return document.querySelector('[data-iv-status="' + CSS.escape(name) + '"]'); }
+
+document.getElementById("interviews").addEventListener("change", async (ev) => {
+  const el = ev.target;
+  if (el.dataset.actFile !== "cv" || !el.files.length) return;
+  const iv = ivByName(el.dataset.iv);
+  const st = rowStatus(iv.name);
+  try {
+    const r = await uploadFile(ivUrl(iv, "/cv"), el.files[0], JOB.max_upload_mb);
+    await loadJob();
+    setStatus(rowStatus(iv.name), "ok", "CV stored (" + r.doc.chars + " characters).");
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+    el.value = "";
+  }
+});
+
+document.getElementById("interviews").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b || !b.dataset.iv) return;
+  const iv = ivByName(b.dataset.iv);
+  if (!iv) return;
+  const st = rowStatus(iv.name);
+  const act = b.dataset.act;
+  if (act === "consent") {
+    const row = b.closest("li");
+    try {
+      await api("POST", ivUrl(iv, "/consent"), {
+        informed_by: row.querySelector('[data-c="by"]').value,
+        method: row.querySelector('[data-c="how"]').value,
+        candidate_agreed: row.querySelector('[data-c="agreed"]').checked,
+      });
+      await loadJob();
+      setStatus(rowStatus(iv.name), "ok", "Consent recorded.");
+    } catch (e) { setStatus(st, "err", errText(e)); }
+  } else if (act === "tailor") {
+    try {
+      const task = await api("POST", ivUrl(iv, "/tailor"), { n: JOB.defaults.n_cv_questions });
+      watchTask(task);
+    } catch (e) { setStatus(st, "err", errText(e)); }
+  } else if (act === "cv-review") {
+    await openCvEditor(iv.name);
+  } else if (act === "cockpit") {
+    const tab = window.open("about:blank", "_blank");
+    setStatus(st, "busy", "Starting the cockpit…");
+    try {
+      const r = await api("POST", ivUrl(iv, "/cockpit"));
+      if (tab) { tab.opener = null; tab.location.href = r.url; }
+      await loadJob();
+      setStatus(rowStatus(iv.name), "ok", "Cockpit running at " + r.url + (tab ? " (opened in a new tab)." : " — open it with the Cockpit tab button."));
+    } catch (e) {
+      if (tab) tab.close();
+      setStatus(st, "err", errText(e));
+    }
+  } else if (act === "cockpit-stop") {
+    setStatus(st, "busy", "Stopping the cockpit (it saves the transcript first)…");
+    try {
+      await api("POST", ivUrl(iv, "/cockpit/stop"));
+      await loadJob();
+      setStatus(rowStatus(iv.name), "ok", "Cockpit stopped.");
+    } catch (e) { setStatus(st, "err", errText(e)); }
+  } else if (act === "iv-template") {
+    const name = b.closest("details").querySelector("input").value.trim();
+    if (!name) { setStatus(st, "err", "Give the template a name."); return; }
+    try {
+      const r = await api("POST", ivUrl(iv, "/template"), { name: name });
+      setStatus(st, "ok", "Saved template “" + r.slug + "”. " + (r.left_out.length
+        ? "Left out " + r.left_out.length + " CV-tailored question(s) (candidate data): " +
+          r.left_out.map((q) => q.id + " “" + q.text + "”").join("; ") + "."
+        : "No CV-tailored questions to leave out."));
+    } catch (e) { setStatus(st, "err", errText(e)); }
+  } else if (act === "purge") {
+    const ok = await confirmDialog("Delete this interview?",
+      "Every file in this interview folder is deleted for good — CV, consent, transcript, reports (D18). The job and its other interviews are not touched.",
+      "Delete interview", iv.path);
+    if (!ok) return;
+    try {
+      await api("DELETE", ivUrl(iv));
+      delete CV[iv.name];
+      await loadJob();
+    } catch (e) { setStatus(st, "err", errText(e)); }
+  }
+});
+
+// CV-tailored questions: edit/accept into THIS interview only (never the job, never a template)
+async function openCvEditor(name) {
+  const iv = ivByName(name);
+  try {
+    const r = await api("GET", ivUrl(iv, "/cv-draft"));
+    CV[name] = {
+      langs: r.languages, requirements: r.requirements, quotes: r.draft.cv_quotes || {},
+      ungrounded: r.draft.ungrounded || [], errors: {}, list: [],
+      qs: r.draft.questions.map((q) => {
+        const text = {};
+        r.languages.forEach((l) => { text[l] = (q.text && q.text[l]) || ""; });
+        return { uid: uid(), id: q.id, text: text, intent: q.intent || "", signals: (q.expected_signals || []).join("\n"),
+          requirement_ids: (q.requirement_ids || []).slice(), assesses_language: !!q.assesses_language };
+      }),
+    };
+    renderCvEditor(name);
+    const first = document.querySelector('[data-cv-editor="' + CSS.escape(name) + '"] textarea');
+    if (first) first.focus();
+  } catch (e) { setStatus(rowStatus(name), "err", errText(e)); }
+}
+
+function cvQuestionHtml(st, q) {
+  const u = escapeHtml(q.uid);
+  const quote = st.quotes[q.id] || "";
+  const flagged = st.ungrounded.includes(q.id);
+  return '<li class="q cv" data-uid="' + u + '"><div class="q-top"><span class="idtag">' + escapeHtml(q.id) + '</span>' +
+    '<span class="chip info">CV-tailored</span>' + (flagged ? '<span class="chip warn">quote not found in the CV</span>' : '') +
+    '<button type="button" class="small danger" data-cv-act="remove" data-uid="' + u + '">Remove</button></div>' +
+    (quote ? '<p class="meta">Probes the CV words: “' + escapeHtml(quote) + '”</p>' : '') +
+    errsHtml((st.errors[q.uid] || [])) +
+    '<div class="grid two">' + st.langs.map((l) =>
+      '<div class="field"><label for="cvf-' + u + '-' + escapeHtml(l) + '">Wording — ' + escapeHtml(langLabel(l)) + '</label>' +
+      '<textarea rows="2" id="cvf-' + u + '-' + escapeHtml(l) + '" data-uid="' + u + '" data-cv-field="wording" data-lang="' + escapeHtml(l) + '">' +
+      escapeHtml(q.text[l]) + '</textarea></div>').join("") + '</div>' +
+    '<div class="grid two"><div class="field"><label for="cvf-' + u + '-intent">Intent</label><input type="text" id="cvf-' + u + '-intent" data-uid="' + u + '" data-cv-field="intent" value="' + escapeHtml(q.intent) + '"></div>' +
+    '<div class="field"><label for="cvf-' + u + '-signals">Expected signals (one per line)</label><textarea rows="2" id="cvf-' + u + '-signals" data-uid="' + u + '" data-cv-field="signals">' + escapeHtml(q.signals) + '</textarea></div></div>' +
+    (st.requirements.length ? '<fieldset><legend>Requirements it probes</legend><div class="links">' + st.requirements.map((r) =>
+      '<label class="inline"><input type="checkbox" data-uid="' + u + '" data-cv-field="link" data-rid="' + escapeHtml(r.id) + '"' +
+      (q.requirement_ids.includes(r.id) ? " checked" : "") + '> ' + escapeHtml(r.id) + ' ' + escapeHtml(r.text.slice(0, 48)) + '</label>').join("") + '</div></fieldset>' : '') +
+    '</li>';
+}
+
+function renderCvEditor(name) {
+  const host = document.querySelector('[data-cv-editor="' + CSS.escape(name) + '"]');
+  const st = CV[name];
+  if (!host || !st) return;
+  host.innerHTML = '<div class="sec" style="margin-top:8px"><div class="sec-head"><h3>Tailored questions — this interview only</h3></div>' +
+    '<p class="muted">They probe claims in this candidate&#39;s CV, so they stay in this interview: never in the job&#39;s bank, never in a template.</p>' +
+    (st.qs.length ? '<ol class="plain">' + st.qs.map((q) => cvQuestionHtml(st, q)).join("") + '</ol>' : '<p class="empty">All removed — discard the draft instead.</p>') +
+    (st.list.length ? '<ul class="errs">' + st.list.map((m) => '<li>' + escapeHtml(m) + '</li>').join("") + '</ul>' : '') +
+    '<div class="actions"><button type="button" class="small primary" data-cv-act="accept" data-iv="' + escapeHtml(name) + '">Accept into this interview</button>' +
+    '<button type="button" class="small danger" data-cv-act="discard" data-iv="' + escapeHtml(name) + '">Discard…</button>' +
+    '<button type="button" class="small" data-cv-act="close" data-iv="' + escapeHtml(name) + '">Close</button></div></div>';
+}
+
+function cvStateOf(el) {
+  const holder = el.closest("[data-cv-editor]");
+  return holder ? { name: holder.dataset.cvEditor, st: CV[holder.dataset.cvEditor] } : null;
+}
+
+document.getElementById("interviews").addEventListener("input", (ev) => {
+  const el = ev.target;
+  if (!el.dataset.cvField) return;
+  const h = cvStateOf(el);
+  const q = h && h.st.qs.find((x) => x.uid === el.dataset.uid);
+  if (!q) return;
+  if (el.dataset.cvField === "wording") q.text[el.dataset.lang] = el.value;
+  if (el.dataset.cvField === "intent") q.intent = el.value;
+  if (el.dataset.cvField === "signals") q.signals = el.value;
+});
+document.getElementById("interviews").addEventListener("change", (ev) => {
+  const el = ev.target;
+  if (el.dataset.cvField !== "link") return;
+  const h = cvStateOf(el);
+  const q = h && h.st.qs.find((x) => x.uid === el.dataset.uid);
+  if (!q) return;
+  q.requirement_ids = q.requirement_ids.filter((x) => x !== el.dataset.rid);
+  if (el.checked) q.requirement_ids.push(el.dataset.rid);
+});
+document.getElementById("interviews").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-cv-act]");
+  if (!b) return;
+  const h = cvStateOf(b);
+  if (!h) return;
+  const name = h.name;
+  const iv = ivByName(name);
+  const act = b.dataset.cvAct;
+  if (act === "remove") {
+    h.st.qs = h.st.qs.filter((q) => q.uid !== b.dataset.uid);
+    renderCvEditor(name);
+    const acc = document.querySelector('[data-cv-act="accept"][data-iv="' + CSS.escape(name) + '"]');
+    if (acc) acc.focus();
+  } else if (act === "close") {
+    delete CV[name];
+    document.querySelector('[data-cv-editor="' + CSS.escape(name) + '"]').innerHTML = "";
+  } else if (act === "discard") {
+    if (!(await confirmDialog("Discard the tailored questions?", "The pending CV-tailored draft of this interview is deleted.", "Discard"))) return;
+    try {
+      await api("DELETE", ivUrl(iv, "/cv-draft"));
+      delete CV[name];
+      await loadJob();
+    } catch (e) { setStatus(rowStatus(name), "err", errText(e)); }
+  } else if (act === "accept") {
+    const qs = h.st.qs;
+    try {
+      const r = await api("POST", ivUrl(iv, "/cv-draft/accept"), {
+        questions: qs.map((q) => ({
+          id: q.id, text: Object.assign({}, q.text), intent: q.intent,
+          expected_signals: q.signals.split("\n").map((x) => x.trim()).filter(Boolean),
+          requirement_ids: q.requirement_ids.slice(), assesses_language: q.assesses_language,
+        })),
+      });
+      delete CV[name];
+      await loadJob();
+      setStatus(rowStatus(name), "ok", "Added " + r.added.length + " CV-tailored question(s) to this interview: " + r.added.join(", ") + ".");
+    } catch (e) {
+      h.st.errors = {};
+      h.st.list = e.errors && e.errors.length ? e.errors : [errText(e)];
+      h.st.list.forEach((m) => {
+        const x = /^questions\[(\d+)\]/.exec(m);
+        if (x && qs[Number(x[1])]) (h.st.errors[qs[Number(x[1])].uid] = h.st.errors[qs[Number(x[1])].uid] || []).push(m);
+      });
+      renderCvEditor(name);
+    }
+  }
+});
+
+mountDisplayControl(document.getElementById("display-host"));
+loadJob();
+</script>
+</body>
+</html>

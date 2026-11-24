@@ -1,0 +1,31 @@
+# GPU override for compose.yaml — needs the NVIDIA driver + NVIDIA Container Toolkit on the host.
+#
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d --build
+#
+# Adds a device reservation to BOTH services and builds the image's `gpu` target (cuBLAS 12 +
+# cuDNN 9 for faster-whisper on CUDA). Publishes no port of its own: the loopback-only ports of
+# compose.yaml stand (D14, pinned by tests/test_compose.py).
+services:
+  app:
+    build:
+      target: gpu
+    image: second-chair:gpu
+    environment:
+      STT_MODEL: ${STT_MODEL:-large-v3-turbo}
+      STT_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

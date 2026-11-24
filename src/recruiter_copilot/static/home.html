@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Chair workspace</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/workspace.css">
+<script src="/static/workspace.js"></script>
+</head>
+<body>
+<header class="top">
+  <span class="brand" id="brand">Second Chair</span>
+  <h1>Workspace</h1>
+  <span class="sub" id="root-path">loading…</span>
+  <div class="toolbar" id="display-host"></div>
+  <p class="disclosure" id="disclosure"></p>
+</header>
+<main class="page">
+  <p class="si1" id="si1" hidden></p>
+  <div class="cols">
+    <div>
+      <section class="card" aria-labelledby="jobs-h">
+        <h2 id="jobs-h">Jobs and interviews</h2>
+        <div id="jobs" aria-live="polite"><p class="empty">Loading…</p></div>
+      </section>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <section class="card" aria-labelledby="new-h">
+        <h2 id="new-h">New job</h2>
+        <form id="new-job" autocomplete="off">
+          <div class="field">
+            <label for="nj-title">Job title</label>
+            <input type="text" id="nj-title" name="title" required maxlength="200" placeholder="e.g. Backend Developer (Python)">
+          </div>
+          <div class="row">
+            <div class="field narrow">
+              <label for="nj-primary">Main language</label>
+              <input type="text" id="nj-primary" value="pl" maxlength="3" aria-describedby="nj-lang-help">
+            </div>
+            <div class="field narrow">
+              <label for="nj-secondary">Second language</label>
+              <input type="text" id="nj-secondary" value="en" maxlength="3" aria-describedby="nj-lang-help">
+            </div>
+            <div class="field narrow">
+              <label for="nj-assess">Assess language</label>
+              <select id="nj-assess">
+                <option value="">none</option>
+                <option value="primary">main</option>
+                <option value="secondary" selected>second</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted" id="nj-lang-help">Language codes such as pl, en. Questions get a wording in each.</p>
+          <div class="actions"><button type="submit" class="primary">Create job</button></div>
+          <p class="status" id="nj-status" role="status"></p>
+        </form>
+      </section>
+      <section class="card" aria-labelledby="tpl-h">
+        <h2 id="tpl-h">Templates</h2>
+        <div id="templates"><p class="empty">Loading…</p></div>
+        <p class="status" id="tpl-status" role="status"></p>
+      </section>
+      <section class="card" aria-labelledby="rep-h">
+        <h2 id="rep-h">Reports</h2>
+        <div id="reports"><p class="empty">Loading…</p></div>
+      </section>
+    </div>
+  </div>
+</main>
+<script>
+"use strict";
+let WS = null;
+
+// Naming rule (tests/test_workspace_pages.py): a value spliced into markup is escapeHtml(…)'d;
+// a helper that returns ready markup is named …Html.
+function statusChipHtml(iv) {
+  return '<span class="chip">' + escapeHtml(iv.status) + '</span>' +
+    (iv.served ? ' <span class="chip info">in cockpit</span>' : '');
+}
+function consentChipHtml(iv) {
+  return iv.consent_ok
+    ? '<span class="chip ok">consent ok</span>'
+    : '<span class="chip warn">consent missing</span>';
+}
+function reportLinksHtml(iv) {
+  if (!iv.reports.length) return '<span class="muted">—</span>';
+  return iv.reports.map((r) => '<a href="' + escapeHtml(r.url) + '" target="_blank" rel="noopener">' +
+    escapeHtml(r.name) + '</a>').join("<br>");
+}
+function interviewRowsHtml(job) {
+  if (!job.interviews.length) {
+    return '<p class="empty">No interviews yet — open the job to start one.</p>';
+  }
+  const rowsHtml = job.interviews.map((iv) =>
+    '<tr><td data-label="Date">' + escapeHtml(iv.date) + '</td>' +
+    '<td data-label="Candidate">' + escapeHtml(iv.candidate) + '</td>' +
+    '<td data-label="Status">' + statusChipHtml(iv) + '</td>' +
+    '<td data-label="Consent">' + consentChipHtml(iv) + '</td>' +
+    '<td data-label="Reports">' + reportLinksHtml(iv) + '</td></tr>').join("");
+  return '<table class="iv"><thead><tr><th scope="col">Date</th><th scope="col">Candidate</th>' +
+    '<th scope="col">Status</th><th scope="col">Consent</th><th scope="col">Reports</th></tr></thead><tbody>' +
+    rowsHtml + '</tbody></table>';
+}
+function jobLangsHtml(job) {
+  const l = job.languages || {};
+  let s = escapeHtml(l.primary || "");
+  if (l.secondary) s += " + " + escapeHtml(l.secondary);
+  if (l.assess_language) s += " · assesses " + escapeHtml(l.assess_language);
+  return s;
+}
+
+function renderJobs() {
+  const host = document.getElementById("jobs");
+  if (!WS.jobs.length) {
+    host.innerHTML =
+      '<p><strong>No jobs yet.</strong> This workspace is empty. To prepare an interview:</p>' +
+      '<ol class="steps"><li>Create a job (right) — title and languages.</li>' +
+      '<li>Drop the job offer (PDF, DOCX, MD or TXT) or paste its text.</li>' +
+      '<li>Generate a draft of requirements, questions and a timed plan — then edit and accept it.</li>' +
+      '<li>Start an interview: candidate, optional CV, the candidate&#39;s consent.</li>' +
+      '<li>Open the cockpit for the call; reports appear here afterwards.</li></ol>';
+    return;
+  }
+  host.innerHTML = '<ul class="plain">' + WS.jobs.map((job) =>
+    '<li class="item"><div class="top"><h3><a href="/job/' + escapeHtml(encodeURIComponent(job.slug)) + '">' +
+    escapeHtml(job.title) + '</a></h3><span class="meta">' + jobLangsHtml(job) + '</span></div>' +
+    '<p class="meta">' + escapeHtml(job.questions) + ' question(s) in the bank · ' +
+    escapeHtml(job.offer_docs) + ' offer document(s)' +
+    (job.has_draft ? ' · <span class="chip warn">draft waiting for review</span>' : '') + '</p>' +
+    interviewRowsHtml(job) + '</li>').join("") + '</ul>';
+}
+
+function renderTemplates() {
+  const host = document.getElementById("templates");
+  if (!WS.templates.length) {
+    host.innerHTML = '<p class="empty">No templates yet. Save a job&#39;s accepted questions as a template from its page.</p>';
+    return;
+  }
+  host.innerHTML = '<ul class="plain">' + WS.templates.map((t) =>
+    '<li class="item" data-tpl="' + escapeHtml(t.slug) + '"><div class="top"><h3>' + escapeHtml(t.name) + '</h3>' +
+    '<span class="meta">' + escapeHtml(t.questions) + ' question(s)' + (t.has_plan ? ' · plan' : '') + '</span></div>' +
+    '<div class="actions"><button type="button" class="small" data-act="show" data-tpl="' + escapeHtml(t.slug) + '" aria-expanded="false">Show</button>' +
+    '<button type="button" class="small danger" data-act="delete" data-tpl="' + escapeHtml(t.slug) + '">Delete…</button></div>' +
+    '<div class="tpl-body" hidden></div></li>').join("") + '</ul>';
+}
+
+function renderReports() {
+  const host = document.getElementById("reports");
+  const all = [];
+  WS.jobs.forEach((job) => job.interviews.forEach((iv) => iv.reports.forEach((r) =>
+    all.push({ job: job, iv: iv, r: r }))));
+  if (!all.length) {
+    host.innerHTML = '<p class="empty">No reports yet. A report appears next to its interview after the analysis runs.</p>';
+    return;
+  }
+  host.innerHTML = '<ul class="plain">' + all.map((x) =>
+    '<li class="item"><a href="' + escapeHtml(x.r.url) + '" target="_blank" rel="noopener">' + escapeHtml(x.r.name) +
+    '</a><div class="meta">' + escapeHtml(x.job.title) + ' · ' + escapeHtml(x.iv.date) + ' · ' +
+    escapeHtml(x.iv.candidate) + '</div></li>').join("") + '</ul>';
+}
+
+async function refresh() {
+  try {
+    WS = await api("GET", "/api/workspace");
+  } catch (e) {
+    document.getElementById("jobs").innerHTML = '<p class="status err">' + escapeHtml(errText(e)) + '</p>';
+    return;
+  }
+  document.getElementById("root-path").textContent = WS.root;
+  const d = WS.disclosure;
+  document.getElementById("disclosure").textContent =
+    "Profile " + d.profile + " · drafts by " + d.chat_provider +
+    (d.data_left_machine ? " — documents leave this machine" : " — nothing leaves this machine");
+  const si1 = document.getElementById("si1");
+  si1.hidden = !d.line;
+  si1.textContent = d.line || "";
+  renderJobs();
+  renderTemplates();
+  renderReports();
+}
+
+document.getElementById("new-job").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const st = document.getElementById("nj-status");
+  const primary = document.getElementById("nj-primary").value.trim();
+  const secondary = document.getElementById("nj-secondary").value.trim();
+  const which = document.getElementById("nj-assess").value;
+  const assess = which === "primary" ? primary : (which === "secondary" ? secondary : "");
+  setStatus(st, "busy", "Creating…");
+  try {
+    const r = await api("POST", "/api/jobs", {
+      title: document.getElementById("nj-title").value,
+      primary: primary, secondary: secondary, assess_language: assess,
+    });
+    window.location.href = r.url;
+  } catch (e) {
+    setStatus(st, "err", errText(e));
+  }
+});
+
+document.getElementById("templates").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  const slug = b.dataset.tpl;
+  const item = b.closest("li[data-tpl]");
+  const st = document.getElementById("tpl-status");
+  if (b.dataset.act === "show") {
+    const body = item.querySelector(".tpl-body");
+    if (!body.hidden) {
+      body.hidden = true;
+      b.setAttribute("aria-expanded", "false");
+      b.textContent = "Show";
+      return;
+    }
+    try {
+      const t = await api("GET", "/api/templates/" + encodeURIComponent(slug));
+      const lang = (t.languages && t.languages.primary) || "en";
+      body.innerHTML = '<ol class="tpl-qs">' + t.questions.map((q) =>
+        '<li>' + escapeHtml((q.text && (q.text[lang] || Object.values(q.text)[0])) || q.id) + '</li>').join("") + '</ol>';
+      body.hidden = false;
+      b.setAttribute("aria-expanded", "true");
+      b.textContent = "Hide";
+    } catch (e) {
+      setStatus(st, "err", errText(e));
+    }
+    return;
+  }
+  if (b.dataset.act === "delete") {
+    const ok = await confirmDialog("Delete template?",
+      "The template file is deleted. Jobs that used it keep their questions.", "Delete template",
+      "templates/" + slug + ".json");
+    if (!ok) return;
+    try {
+      await api("DELETE", "/api/templates/" + encodeURIComponent(slug));
+      setStatus(st, "ok", "Template deleted.");
+      await refresh();
+    } catch (e) {
+      setStatus(st, "err", errText(e));
+    }
+  }
+});
+
+mountDisplayControl(document.getElementById("display-host"));
+refresh();
+</script>
+</body>
+</html>

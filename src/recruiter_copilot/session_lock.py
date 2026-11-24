@@ -96,6 +96,18 @@ def _is_stale(owner: dict, path: Path) -> bool:
     return not pid_alive(pid)
 
 
+def live_owner(session_dir: Path) -> dict | None:
+    """The lock's recorded owner when a LIVE process holds the folder, else None.
+
+    Same liveness rule as ``acquire``: absent, unreadable, dead-PID and leaked-own-PID locks are
+    stale (None); a live PID, this process's own held lock, or another host's lock is live. Used by
+    ``store.purge_bundle`` and ``prep.accept_cv_draft`` to refuse touching a folder being served."""
+    owner = read_lock(session_dir)
+    if owner is None or _is_stale(owner, lock_path(session_dir)):
+        return None
+    return owner
+
+
 def acquire(session_dir: Path) -> Path:
     """Take the session folder's lock for this process, or raise ``SessionLocked``.
 

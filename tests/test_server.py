@@ -117,7 +117,7 @@ def test_index_serves_the_hand_written_page(demo_session, settings):
     assert r.status_code == 200
     body = r.text
     assert "<!doctype html>" in body.lower()
-    assert "recruiter-copilot cockpit" in body
+    assert "Second Chair cockpit" in body  # D27 public name
     # D14: no CDN / no webfont / no build step — nothing loaded off-box.
     assert "http://" not in body and "https://" not in body
     assert "fonts.googleapis" not in body

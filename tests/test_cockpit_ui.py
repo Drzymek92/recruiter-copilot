@@ -134,3 +134,11 @@ def test_storage_is_ui_prefs_only_and_every_access_is_guarded(html: str) -> None
         assert script.find("catch", pos) != -1
     assert "sessionStorage" not in script and "indexedDB" not in script
     assert len(set(re.findall(r'"(recruiter-copilot\.[\w.-]+)"', script))) == 1  # one prefs key
+
+
+def test_cockpit_title_and_header_say_second_chair_but_prefs_key_is_kept(html: str) -> None:
+    """D27: user-visible name is Second Chair; the storage key keeps its old name (D14 prefs)."""
+    assert re.search(r"<title>Second Chair cockpit</title>", html)
+    assert '<span class="brand" id="brand">Second Chair</span>' in html
+    assert '"recruiter-copilot.cockpit.prefs"' in html
+    assert "recruiter-copilot analyse" not in html  # commands shown use the new name
