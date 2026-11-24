@@ -68,6 +68,7 @@
       <div class="field" style="flex:0 0 auto"><button type="button" class="primary" id="generate">Generate draft</button></div>
     </div>
     <p class="status" id="gen-status" role="status" aria-live="polite"></p>
+    <div id="gen-notes"></div>
     <div class="actions" id="draft-actions"></div>
     <div class="row" style="margin-top:12px">
       <div class="field"><label for="tpl-apply">Apply a template to the bank</label><select id="tpl-apply"></select></div>
@@ -80,6 +81,7 @@
 
   <section class="card" id="editor" aria-labelledby="ed-h" hidden>
     <div class="ed-head"><h2 class="card-h" id="ed-h" tabindex="-1">Editor</h2><span class="muted" id="ed-stats"></span></div>
+    <div id="ed-notes"></div>
     <div id="ed-body"></div>
     <div class="sticky-actions">
       <div class="actions" style="margin:0">
@@ -359,8 +361,10 @@ function watchTask(task) {
         Math.round(t.elapsed_s) + " s (" + t.calls + " model call" + (t.calls === 1 ? "" : "s") + "). " +
         (t.kind === "tailor" ? "Use “Review tailored questions”" : "Use “Review the pending draft”") +
         " — nothing is used until you accept."
-      : (t.kind === "tailor" ? "Tailoring failed: " : "No draft: ") + t.error +
-        (t.reasons.length ? " — " + t.reasons.slice(0, 6).join("; ") : "");
+      : (t.kind === "tailor" ? "Tailoring failed" : "No draft") +
+        (t.reasons.length ? " — the model's draft did not pass the checks: " +
+          (t.messages && t.messages.length ? t.messages : t.reasons).slice(0, 6).join(" ")
+          : ": " + t.error);
     await loadJob();  // re-renders the rows: set the status on the fresh element
     setStatus(taskStatusEl(t), ok ? "ok" : "err", msg);
   };
@@ -463,6 +467,8 @@ async function openDraft() {
     const d = await api("GET", API + "/draft");
     buildEditor("draft", d.requirements, d.questions, d.plan, d.target_minutes, { stats: d.stats, ungrounded: d.ungrounded });
     showEditor();
+    showNotes(document.getElementById("ed-notes"), d.warnings,
+      "Notes on this draft — for your judgement; they never block Accept", document.getElementById("ed-h"));
   } catch (e) {
     setStatus(document.getElementById("gen-status"), "err", errText(e));
   }
@@ -472,6 +478,7 @@ function openBank() {
   const target = (s.plan && s.plan.target_minutes) || JOB.defaults.target_minutes;
   buildEditor("bank", s.requirements, s.questions, s.plan, target, {});
   showEditor();
+  showNotes(document.getElementById("ed-notes"), [], "");
 }
 function showEditor() {
   const sec = document.getElementById("editor");
@@ -490,6 +497,7 @@ function showEditor() {
 }
 function closeEditor() {
   ED = null;
+  showNotes(document.getElementById("ed-notes"), [], "");
   document.getElementById("editor").hidden = true;
   updatePrepButtons();
 }
@@ -833,34 +841,40 @@ function editorPayload() {
   };
 }
 
-function placeErrors(reasons, qOrder, real) {
+// Each reason is ROUTED by its machine form (errors[i]) and SHOWN as its plain sentence
+// (messages[i], #2043) — e.g. "Question 2 needs an English wording." beside that wording.
+function placeErrors(e, qOrder, real) {
+  const reasons = e.errors;
   const errors = {};
-  const put = (u, f, m) => { errors[u] = errors[u] || {}; (errors[u][f] = errors[u][f] || []).push(m); };
   ED.generalReq = []; ED.generalPlan = []; ED.generalQ = [];
-  reasons.forEach((m) => {
+  const shown = [];
+  reasons.forEach((m, i) => {
+    const plain = plainAt(e, i);
+    shown.push(plain);
+    const put = (u, f) => { errors[u] = errors[u] || {}; (errors[u][f] = errors[u][f] || []).push(plain); };
     let x;
     if ((x = /^requirements\[(\d+)\]/.exec(m)) && ED.requirements[Number(x[1])]) {
       const u = ED.requirements[Number(x[1])].uid;
-      put(u, /: text /.test(m) ? "text" : /: kind /.test(m) ? "kind" : /: weight /.test(m) ? "weight" : "_", m);
+      put(u, /: text /.test(m) ? "text" : /: kind /.test(m) ? "kind" : /: weight /.test(m) ? "weight" : "_");
     } else if ((x = /^questions\[(\d+)\]/.exec(m)) && qOrder[Number(x[1])]) {
       const u = qOrder[Number(x[1])].uid;
       const lang = /session language '([^']+)'/.exec(m);
       put(u, lang ? "text-" + lang[1] : /intent/.test(m) ? "intent" : /expected_signals/.test(m) ? "signals"
-        : /requirement/.test(m) ? "links" : "_", m);
+        : /requirement/.test(m) ? "links" : "_");
     } else if ((x = /^plan\.sections\[(\d+)\]/.exec(m)) && real[Number(x[1])]) {
-      put(real[Number(x[1])].uid, /minutes/.test(m) ? "minutes" : "_", m);
+      put(real[Number(x[1])].uid, /minutes/.test(m) ? "minutes" : "_");
     } else if ((x = /^plan: question '([^']+)'/.exec(m)) && qOrder.find((q) => q.id === x[1])) {
-      put(qOrder.find((q) => q.id === x[1]).uid, "_", m);
+      put(qOrder.find((q) => q.id === x[1]).uid, "_");
     } else if (/^requirements/.test(m)) {
-      ED.generalReq.push(m);
+      ED.generalReq.push(plain);
     } else if (/^questions/.test(m)) {
-      ED.generalQ.push(m);
+      ED.generalQ.push(plain);
     } else {
-      ED.generalPlan.push(m);
+      ED.generalPlan.push(plain);
     }
   });
   ED.errors = errors;
-  ED.errorList = reasons;
+  ED.errorList = shown;
   ED.errorCount = reasons.length;
 }
 
@@ -882,15 +896,19 @@ document.getElementById("ed-accept").addEventListener("click", async () => {
     if (mode === "draft") {
       closeEditor();
       setStatus(document.getElementById("gen-status"), "ok", msg);
+      showNotes(document.getElementById("gen-notes"), r.warnings,
+        "Notes on what you accepted — for your judgement", document.getElementById("generate"));
       document.getElementById("gen-status").scrollIntoView({ block: "center" });
     } else {
       openBank();
       ED.saved = msg;
       renderSummary();
+      showNotes(document.getElementById("ed-notes"), r.warnings,
+        "Notes on the saved bank — for your judgement; they never block Save", document.getElementById("ed-h"));
     }
   } catch (e) {
     if (e.errors && e.errors.length) {
-      placeErrors(e.errors, p.qOrder, p.real);
+      placeErrors(e, p.qOrder, p.real);
     } else {
       ED.errors = {}; ED.errorList = [errText(e)]; ED.errorCount = 1;
     }
@@ -928,34 +946,39 @@ document.getElementById("iv-form").addEventListener("submit", async (ev) => {
   const agreed = document.getElementById("iv-agreed").checked;
   const by = document.getElementById("iv-informed-by").value;
   const how = document.getElementById("iv-method").value;
-  setStatus(st, "busy", "Creating the interview…");
+  const form = {
+    candidate: document.getElementById("iv-candidate").value,
+    date: document.getElementById("iv-date").value,
+    consent: (agreed || by || how) ? { informed_by: by, method: how, candidate_agreed: agreed } : null,
+  };
+  const cvInput = document.getElementById("iv-cv");
+  const cv = cvInput.files[0];
+  setStatus(st, "busy", cv ? "Reading the CV, then creating the interview…" : "Creating the interview…");
   let created;
   try {
-    created = await api("POST", API + "/interviews", {
-      candidate: document.getElementById("iv-candidate").value,
-      date: document.getElementById("iv-date").value,
-      consent: (agreed || by || how) ? { informed_by: by, method: how, candidate_agreed: agreed } : null,
-    });
+    // #2043: with a CV, ONE request — the server reads the CV before it creates anything, so a
+    // refused CV leaves no interview behind (the form stays filled: pick another file).
+    created = cv
+      ? await uploadFile(API + "/interviews", cv, JOB.max_upload_mb,
+          { "X-Interview": encodeURIComponent(JSON.stringify(form)) })
+      : await api("POST", API + "/interviews", form);
   } catch (e) {
-    setStatus(st, "err", errText(e));
+    const msg = errText(e);
+    const cvRefused = !!cv && (e.field === "cv" || e.status === 413);
+    setStatus(st, "err", cvRefused
+      ? "Nothing was created — the CV was refused: " + (msg.startsWith(cv.name) ? msg : cv.name + " — " + msg) +
+        ". Choose another file, or clear the CV field and add it later on the interview row."
+      : "Nothing was created — " + msg);
+    if (cvRefused) cvInput.setAttribute("aria-invalid", "true");
     return;
   }
-  let msg = "Created " + created.name + ". " +
-    (created.consent_recorded ? "Consent recorded." : "Consent not recorded yet — the cockpit stays closed until it is.");
-  const cv = document.getElementById("iv-cv").files[0];
-  let kind = "ok";
-  if (cv) {
-    try {
-      const r = await uploadFile("/api/interviews/" + encodeURIComponent(SLUG) + "/" + encodeURIComponent(created.name) + "/cv", cv, JOB.max_upload_mb);
-      msg += " CV stored (" + r.doc.chars + " characters).";
-    } catch (e) {
-      msg += " The CV was refused: " + errText(e) + " — add another on the interview row.";
-      kind = "err";
-    }
-  }
+  cvInput.removeAttribute("aria-invalid");
+  const msg = "Created " + created.name + ". " +
+    (created.consent_recorded ? "Consent recorded." : "Consent not recorded yet — the cockpit stays closed until it is.") +
+    (cv ? " CV stored." : "");
   document.getElementById("iv-form").reset();
   document.getElementById("iv-date").value = todayIso();
-  setStatus(st, kind, msg);
+  setStatus(st, "ok", msg);
   await loadJob();
 });
 
@@ -1211,10 +1234,11 @@ document.getElementById("interviews").addEventListener("click", async (ev) => {
       setStatus(rowStatus(name), "ok", "Added " + r.added.length + " CV-tailored question(s) to this interview: " + r.added.join(", ") + ".");
     } catch (e) {
       h.st.errors = {};
-      h.st.list = e.errors && e.errors.length ? e.errors : [errText(e)];
-      h.st.list.forEach((m) => {
+      const reasons = e.errors && e.errors.length ? e.errors : [];
+      h.st.list = reasons.length ? reasons.map((m, i) => plainAt(e, i)) : [errText(e)];
+      reasons.forEach((m, i) => {  // routed by the machine form, shown in plain words (#2043)
         const x = /^questions\[(\d+)\]/.exec(m);
-        if (x && qs[Number(x[1])]) (h.st.errors[qs[Number(x[1])].uid] = h.st.errors[qs[Number(x[1])].uid] || []).push(m);
+        if (x && qs[Number(x[1])]) (h.st.errors[qs[Number(x[1])].uid] = h.st.errors[qs[Number(x[1])].uid] || []).push(plainAt(e, i));
       });
       renderCvEditor(name);
     }

@@ -488,6 +488,8 @@ class Cockpit:
     _persist_base: PipelineStats | None = None  # #994: stats of captures already on disk (frozen)
     _base_frozen: bool = False  # #994: has _persist_base been read from the pre-existing file yet
     prior_lines: int = 0  # #1141: lines seeded from a prior capture's transcript.json
+    replay_running: bool = False  # #2043: the snapshot says when a replay ends (the UI pill)
+    replay_error: str = ""  # #2043: why the last replay stopped early ("" = it did not)
     _subscribers: set[asyncio.Queue] = field(default_factory=set)
     _finish_task: asyncio.Task | None = None
 
@@ -505,6 +507,7 @@ class Cockpit:
             live["saved"] = self.transcript_saved
             live["prior_lines"] = self.prior_lines
         state["live"] = live
+        state["replay"] = {"running": self.replay_running, "error": self.replay_error}
         return state
 
     def seed_prior_lines(self, prior: list[TranscriptLine]) -> int:
@@ -649,13 +652,31 @@ class Cockpit:
 
 
 async def run_replay(cockpit: Cockpit, delay: float = 0.0) -> int:
-    """Apply the prepared events in order, broadcasting the snapshot after each (demo, no mic)."""
-    for event in cockpit.replay_events:
-        cockpit.apply_replay_event(event)
+    """Apply the prepared events in order, broadcasting the snapshot after each (demo, no mic).
+
+    #2043: ``snapshot()["replay"]`` tells the page when it ends — the LAST event's snapshot already
+    says ``running: False`` (no extra message), and a failure broadcasts one more snapshot with
+    ``error`` set. Returns the number of events applied."""
+    events = cockpit.replay_events
+    cockpit.replay_running, cockpit.replay_error = True, ""
+    applied = 0
+    try:
+        for i, event in enumerate(events):
+            cockpit.apply_replay_event(event)
+            applied += 1
+            if i == len(events) - 1:
+                cockpit.replay_running = False
+            await cockpit.broadcast(cockpit.snapshot())
+            if delay and cockpit.replay_running:
+                await asyncio.sleep(delay)
+    except Exception as e:  # noqa: BLE001 — a background task: report on the page, not a traceback
+        logger.exception("replay stopped after %d of %d events", applied, len(events))
+        cockpit.replay_running = False
+        cockpit.replay_error = f"stopped after {applied} of {len(events)} events ({e})"
         await cockpit.broadcast(cockpit.snapshot())
-        if delay:
-            await asyncio.sleep(delay)
-    return len(cockpit.replay_events)
+    finally:
+        cockpit.replay_running = False
+    return applied
 
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────────────────────
@@ -865,6 +886,9 @@ def create_app(
             return gate
         if not cockpit.replay_events:
             return JSONResponse(status_code=404, content={"error": "no replay prepared"})
+        if cockpit.replay_running:
+            return JSONResponse(status_code=409, content={"error": "a replay is already running"})
+        cockpit.replay_running = True  # before the task starts: a second click is refused
         asyncio.create_task(run_replay(cockpit, delay))
         return JSONResponse(status_code=202, content={"events": len(cockpit.replay_events)})
 

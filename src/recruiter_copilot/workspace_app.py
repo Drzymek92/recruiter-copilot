@@ -6,7 +6,8 @@ HTML/JS (shared ``static/workspace.css`` + ``static/workspace.js``), no build st
 or webfont, bound to loopback only. The **cockpit** stays its own app (``server.create_app``): one
 bundle per process with its ``.serve.lock``. "Open cockpit" here spawns ``second-chair serve
 <interview-dir> --port <free>`` as a CHILD process (own session, ``PR_SET_PDEATHSIG=SIGINT``, stop =
-ONE SIGINT — the ``scripts/launch_cockpit.py`` pattern) and this app stops its children on exit.
+ONE SIGINT — ``procs``, shared with ``scripts/launch_cockpit.py``) and this app stops its children
+on exit.
 
 Rules the routes keep:
 
@@ -39,12 +40,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import secrets
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -59,7 +58,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from . import prep
+from . import prep, procs
 from . import templates as tpl
 from . import workspace as ws
 from .config import DEFAULT_COCKPIT_PORT_COUNT, LOOPBACK_HOSTS, Settings
@@ -94,12 +93,11 @@ ASSETS = {
     "workspace.js": "text/javascript; charset=utf-8",
 }
 
-RESERVED_PORTS = frozenset({8787})  # another service on the lab machine — never bind or signal it
+RESERVED_PORTS = procs.RESERVED_PORTS  # 8787: another service on the lab machine
 CHILD_PORT_SPAN = DEFAULT_COCKPIT_PORT_COUNT  # default span; Settings.cockpit_ports() is the range
 CHILD_START_TIMEOUT_S = 30.0
-CHILD_STOP_WAIT_S = 15.0  # serve's own bound is 5 s graceful + 4 s drain (#2023/#2027)
+CHILD_STOP_WAIT_S = procs.STOP_WAIT_S
 GRACEFUL_SHUTDOWN_S = 5
-PR_SET_PDEATHSIG = 1  # linux/prctl.h
 MAX_FIELD_CHARS = 200
 MAX_PASTE_BYTES = MAX_BYTES
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -247,6 +245,24 @@ def consent_from(payload: object) -> Consent | None:
     )
 
 
+MAX_FORM_HEADER_CHARS = 4096
+
+
+def interview_header(raw: str | None) -> dict[str, Any]:
+    """The start-interview form carried in ``X-Interview`` (URI-encoded JSON) beside a CV body."""
+    if not raw:
+        raise Refused("the interview form is missing (X-Interview)", 400)
+    if len(raw) > MAX_FORM_HEADER_CHARS:
+        raise Refused("the interview form is too long", 400)
+    try:
+        obj = json.loads(unquote(raw))
+    except json.JSONDecodeError as e:
+        raise Refused(f"the interview form is not JSON ({e})", 400) from e
+    if not isinstance(obj, dict):
+        raise Refused("the interview form must be a JSON object", 400)
+    return obj
+
+
 def _raw_session(folder: Path) -> Session:
     """``session.json`` as stored — NOT ``store.load_session``, which folds the CV text in."""
     path = folder / SESSION_FILE
@@ -340,6 +356,7 @@ class Task:
             "calls": self.calls,
             "error": self.error,
             "reasons": list(self.reasons),
+            "messages": prep.plain_reasons(self.reasons),
             "result": self.result,
         }
 
@@ -406,24 +423,11 @@ class TaskBoard:
 # ── cockpit children ────────────────────────────────────────────────────────────────────────
 
 
-def port_is_free(port: int, host: str = "127.0.0.1") -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) != 0
-
-
-def detach_with_parent_death_signal() -> None:  # pragma: no cover — runs in the forked child
-    """Child pre-exec (Linux): own session — a terminal Ctrl-C reaches only the workspace app,
-    which forwards exactly ONE SIGINT — and PR_SET_PDEATHSIG=SIGINT, so a killed parent still
-    lets serve persist and release ``.serve.lock``. Note: the kernel sends it when the THREAD that
-    forked exits, so children are spawned on the event-loop (main) thread, never a worker."""
-    os.setsid()
-    try:
-        import ctypes  # noqa: PLC0415
-
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGINT)
-    except OSError:
-        pass
+# Port pick, detach (own session + PR_SET_PDEATHSIG=SIGINT) and the one-SIGINT stop live in
+# ``procs`` — shared with scripts/launch_cockpit.py. Children are spawned on the event-loop (main)
+# thread: the kernel sends PDEATHSIG when the THREAD that forked exits.
+port_is_free = procs.port_is_free
+detach_with_parent_death_signal = procs.detach_with_parent_death_signal
 
 
 @dataclass
@@ -496,13 +500,12 @@ class CockpitChildren:
 
     def _pick_port(self) -> int:
         taken = {c.port for c in self._children.values() if c.alive()}
-        ports = self.port_range()
-        for port in ports:
-            if port in RESERVED_PORTS or port in taken or port == self._own_port:
-                continue
-            if self._port_free(port):
-                return port
-        raise Refused(f"no free port in {ports.start}..{ports.stop - 1}", 503)
+        if self._own_port is not None:
+            taken.add(self._own_port)
+        try:
+            return procs.pick_port(self.port_range(), skip=taken, port_free=self._port_free)
+        except procs.NoFreePort as e:
+            raise Refused(str(e), 503) from e
 
     def spawn(self, folder: Path) -> Child:
         """Start (or reuse) the child for ``folder``. Call on the event-loop thread (PDEATHSIG)."""
@@ -523,14 +526,7 @@ class CockpitChildren:
 
     def wait_listening(self, child: Child, timeout_s: float = CHILD_START_TIMEOUT_S) -> bool:
         """Bounded: True once the child accepts connections, False when it exits or times out."""
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if not child.alive():
-                return False
-            if not self._port_free(child.port):
-                return True
-            time.sleep(0.2)
-        return False
+        return procs.wait_listening(child.port, child.proc, timeout_s, port_free=self._port_free)
 
     def stop(self, folder: Path) -> int | None:
         """ONE SIGINT (serve's clean path), then a bounded wait; SIGTERM only if that times out."""
@@ -541,14 +537,13 @@ class CockpitChildren:
 
     @staticmethod
     def _stop_child(child: Child) -> int | None:
-        if child.alive():
-            child.proc.send_signal(signal.SIGINT)
-        try:
-            return child.proc.wait(timeout=CHILD_STOP_WAIT_S)
-        except subprocess.TimeoutExpired:
-            logger.warning("cockpit child PID %s ignored SIGINT; SIGTERM", child.proc.pid)
-            child.proc.terminate()
-            return child.proc.wait(timeout=CHILD_STOP_WAIT_S)
+        return procs.stop_process(
+            child.proc,
+            CHILD_STOP_WAIT_S,
+            on_escalate=lambda: logger.warning(
+                "cockpit child PID %s ignored SIGINT; SIGTERM", child.proc.pid
+            ),
+        )
 
     def stop_all(self) -> None:
         children, self._children = list(self._children.values()), {}
@@ -635,8 +630,14 @@ def create_workspace_app(
 
     @app.exception_handler(prep.PrepError)
     async def _prep_error(_r: Request, e: prep.PrepError) -> JSONResponse:
+        # #2043: ``errors`` = the machine form (the page places each next to its field; logged
+        # here), ``messages[i]`` = the same reason as a plain sentence for the recruiter.
+        logger.info("validator refused the edit: %s", e.reasons)
         return _error(
-            422, "the draft did not pass the checks — nothing was saved", errors=e.reasons
+            422,
+            "the draft did not pass the checks — nothing was saved",
+            errors=e.reasons,
+            messages=prep.plain_reasons(e.reasons),
         )
 
     @app.exception_handler(IntakeError)
@@ -898,15 +899,18 @@ def create_workspace_app(
             created_at=ws.now_iso(),
         )
         before = len(spec.questions)
+        offer = ws.offer_text(folder)
         accepted = prep.accept_draft(folder, draft)
         if (folder / prep.DRAFT_FILE).is_file():
-            prep._archive(folder / prep.DRAFT_FILE)  # noqa: SLF001 — same rule as `job accept`
+            prep.archive_draft(folder / prep.DRAFT_FILE)  # same rule as `job accept`
         return {
             "ok": True,
             "accepted": accepted,
             "already_in_bank": before,
             "rescaled": v.rescaled,
             "ungrounded": v.ungrounded,
+            # notes on the edited content (never blocking): accepted as arranged, shown after
+            "warnings": prep.draft_warnings(v.requirements, v.questions, v.plan, offer),
         }
 
     @app.post("/api/jobs/{slug}/bank")
@@ -915,12 +919,18 @@ def create_workspace_app(
         folder = job_dir(slug)
         payload = await read_json(request)
         spec = ws.load_job(folder)
-        v, _target = validate_editor(payload, spec.languages, ws.offer_text(folder))
+        offer = ws.offer_text(folder)
+        v, _target = validate_editor(payload, spec.languages, offer)
         spec.requirements = v.requirements
         spec.questions = [ws.fresh_question(q) for q in v.questions]
         spec.plan = v.plan
         ws.save_job(folder, spec)
-        return {"ok": True, "rescaled": v.rescaled, "ungrounded": v.ungrounded}
+        return {
+            "ok": True,
+            "rescaled": v.rescaled,
+            "ungrounded": v.ungrounded,
+            "warnings": prep.draft_warnings(v.requirements, v.questions, v.plan, offer),
+        }
 
     # ── templates ──
     @app.get("/api/templates/{name}")
@@ -950,14 +960,15 @@ def create_workspace_app(
         return {"ok": True, "added": added}
 
     # ── interviews ──
-    @app.post("/api/jobs/{slug}/interviews")
-    async def interview_new(slug: str, request: Request) -> Any:
-        folder = job_dir(slug)
-        payload = await read_json(request)
+    def start_interview(
+        folder: Path, slug: str, payload: dict[str, Any], cv: Path | None = None
+    ) -> dict[str, Any]:
         candidate = _text(payload, "candidate", required=True)
         day = _text(payload, "date") or None
         consent = consent_from(payload.get("consent"))  # validated BEFORE any folder exists
-        bundle = ws.create_interview(folder, candidate, day)
+        # create_interview reads the CV (type, size, text) BEFORE it makes the bundle folder:
+        # a refused CV creates nothing (#2043).
+        bundle = ws.create_interview(folder, candidate, day, cv_file=cv)
         if consent is not None:
             session = _raw_session(bundle)
             session.consent = consent
@@ -968,6 +979,31 @@ def create_workspace_app(
             "consent_recorded": consent is not None,
             "interview": interview_view(slug, bundle, None),
         }
+
+    @app.post("/api/jobs/{slug}/interviews")
+    async def interview_new(slug: str, request: Request) -> Any:
+        folder = job_dir(slug)
+        payload = await read_json(request)
+        return start_interview(folder, slug, payload)
+
+    @app.put("/api/jobs/{slug}/interviews")
+    async def interview_new_with_cv(slug: str, request: Request) -> Any:
+        """Start an interview WITH its CV in one request (#2043): the body is the CV (raw, like
+        every upload), ``X-Filename`` its name, ``X-Interview`` the form as URI-encoded JSON. The
+        form and the CV are checked before any interview folder exists, so a refused CV leaves
+        nothing behind. The CV is staged inside ``interviews/`` (candidate data stays there, D28)
+        and the stage is removed when the request ends."""
+        folder = job_dir(slug)
+        payload = interview_header(request.headers.get("x-interview"))
+        _text(payload, "candidate", required=True)
+        consent_from(payload.get("consent"))
+        try:
+            fname = safe_upload_name(request.headers.get("x-filename"))
+            data = await read_body(request, fname, max_upload_bytes)
+            with staged(folder / ws.INTERVIEWS_DIR, fname, data) as path:
+                return start_interview(folder, slug, payload, cv=path)
+        except IntakeError as e:  # the CV itself was refused — the page says so beside the field
+            return _error(422, str(e), field="cv")
 
     @app.put("/api/interviews/{slug}/{name}/cv")
     async def interview_cv(slug: str, name: str, request: Request) -> Any:
@@ -1064,9 +1100,7 @@ def create_workspace_app(
         errors: list[str] = []
         questions: list[Question] = []
         for i, q in enumerate(raw):
-            parsed = prep._parse_question(  # noqa: SLF001 — the validator's own field rules
-                q, f"questions[{i}]", languages, errors
-            )
+            parsed = prep.parse_question(q, f"questions[{i}]", languages, errors)
             parsed.cv_tailored = True
             questions.append(parsed)
         if errors:
@@ -1080,7 +1114,7 @@ def create_workspace_app(
         )
         added = prep.accept_cv_draft(folder, draft)
         if (folder / prep.CV_DRAFT_FILE).is_file():
-            prep._archive(folder / prep.CV_DRAFT_FILE)  # noqa: SLF001
+            prep.archive_draft(folder / prep.CV_DRAFT_FILE)
         return {"ok": True, "added": added}
 
     @app.post("/api/interviews/{slug}/{name}/cockpit")

@@ -517,7 +517,10 @@ def browser_flow(run: Run, docs: dict[str, Path], workspace: Path) -> dict:
         expect(bad.locator('[data-field="wording"][data-lang="en"]')).to_have_attribute(
             "aria-invalid", "true"
         )
-        expect(bad.locator(".field-err")).to_contain_text("no wording in session language 'en'")
+        # #2043: the recruiter reads a plain sentence beside the field (machine form in the API)
+        expect(bad.locator(".field-err")).to_have_text(
+            f"Question {new_id.removeprefix('q')} needs an English wording."
+        )
         run.shot(page, "editor_inline_error")
         run.step("inline_error_shown", question=new_id)
         bad.locator('[data-field="wording"][data-lang="en"]').fill(

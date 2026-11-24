@@ -728,6 +728,8 @@ def cmd_job(args: argparse.Namespace, settings: Settings, out) -> int:
                 f"{', '.join(draft.ungrounded)} — kept as grounded=False; you decide",
                 file=out,
             )
+        for warning in draft.warnings:
+            print(f"  !! {warning}", file=out)
         print(
             f"PENDING draft → {job_dir / prep.DRAFT_FILE} (job.json unchanged until "
             f"`{PROG} job accept {job_dir.name}`)",

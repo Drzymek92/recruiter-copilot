@@ -271,3 +271,70 @@ def test_si1_line_has_a_place_before_generate_and_tailor() -> None:
     job = (STATIC / "job.html").read_text(encoding="utf-8")
     assert job.index('id="si1-gen"') < job.index('id="generate"')
     assert "JOB.disclosure.line" in job  # the interview row shows it next to "Tailor"
+
+
+# ── #2043 polish ────────────────────────────────────────────────────────────────────────────
+
+
+def _function(src: str, name: str) -> str:
+    """The body of ``function name(…) { … }`` (brace-matched)."""
+    start = src.index(f"function {name}(")
+    i = src.index("{", start)
+    depth = 0
+    for j in range(i, len(src)):
+        depth += {"{": 1, "}": -1}.get(src[j], 0)
+        if depth == 0:
+            return src[start : j + 1]
+    raise AssertionError(f"unbalanced {name}")
+
+
+def test_field_errors_show_the_plain_sentence_routed_by_the_machine_form(sources) -> None:
+    js, job = sources["workspace.js"], sources["job.html"]
+    api = _function(js, "api")
+    assert "messages:" in api and "data.messages" in api  # carried from the 422 reply
+    assert "e.messages[i]" in _function(js, "plainAt")
+    place = _function(job, "placeErrors")
+    assert "plainAt(e, i)" in place  # what the recruiter reads beside the field …
+    assert "ED.errorList = shown" in place  # … and in the summary list
+    assert re.search(r"/\^questions\\\[\(\\d\+\)\\\]/\.exec\(m\)", place)  # routed by machine form
+    assert "placeErrors(e, p.qOrder, p.real)" in job
+    cv_accept = job[job.index('act === "accept"') :]
+    assert "plainAt(e, i)" in cv_accept[:1500]  # the CV-tailored editor too
+    assert "t.messages" in _function(job, "watchTask")  # a failed generation too
+
+
+def test_draft_notes_are_a_dismissible_escaped_list_that_never_blocks_accept(sources) -> None:
+    js, job = sources["workspace.js"], sources["job.html"]
+    notes = _function(js, "showNotes")
+    assert "escapeHtml(w)" in notes and "escapeHtml(heading)" in notes  # every note escaped
+    assert 'data-note="all"' in notes and "Dismiss" in notes
+    assert "localStorage" not in notes  # dismissing stores nothing (D14: prefs only)
+    assert "disabled" not in notes  # never touches the Accept button
+    html = (STATIC / "job.html").read_text(encoding="utf-8")
+    assert html.index('id="ed-notes"') < html.index('id="ed-body"') < html.index('id="ed-accept"')
+    assert 'id="gen-notes"' in html
+    assert "d.warnings" in _function(job, "openDraft")  # shown when the draft opens
+    assert job.count("r.warnings") == 2  # after Accept (draft) and after Save (bank)
+    css = CSS.read_text(encoding="utf-8")
+    assert re.search(r"\.notices\s*\{[^}]*var\(--accent-soft\)", css)  # calm, not --danger
+
+
+def test_disabled_arrows_stay_visible_in_every_theme() -> None:
+    css = CSS.read_text(encoding="utf-8")
+    rule = re.search(r"button\.icon:disabled\s*\{([^}]*)\}", css)
+    assert rule, "button.icon:disabled needs its own rule"
+    body = rule.group(1)
+    assert "opacity: 1" in body and "color: var(--muted)" in body and "border-style: dashed" in body
+    enabled = re.search(r"button\.icon:not\(:disabled\)\s*\{([^}]*)\}", css)
+    assert enabled and "var(--muted)" in enabled.group(1)  # a ≥ 3:1 boundary when enabled
+
+
+def test_start_interview_sends_the_cv_with_the_form_in_one_request(sources) -> None:
+    job = sources["job.html"]
+    submit = job[job.index('getElementById("iv-form").addEventListener("submit"') :]
+    submit = submit[: submit.index("function ivUrl")]
+    assert '"X-Interview": encodeURIComponent(JSON.stringify(form))' in submit
+    assert 'uploadFile(API + "/interviews", cv' in submit
+    assert '/cv"' not in submit and 'created.name) + "/cv' not in submit  # no second request
+    assert "Nothing was created" in submit
+    assert 'data-act-file="cv"' in job  # "Add CV" on the row stays for later

@@ -1,7 +1,9 @@
 """D14 (amended 11-23, #776 / D27 packaging): the shipped Docker files keep the loopback boundary
 at the HOST edge — every published port is ``127.0.0.1:…``, the bundled Ollama publishes none,
 the cockpit-children range is published with the same numbers inside and out, and the build
-context is an allow-list (no candidate data, no secrets can enter the image)."""
+context is an allow-list (no candidate data, no secrets can enter the image). #2045: every image
+input is pinned — base and frontend by digest, the CPU Ollama by a sha256-checked release archive,
+the GPU Ollama by digest — and both Ollama paths run the same version."""
 
 from __future__ import annotations
 
@@ -13,10 +15,19 @@ import yaml  # dev extra only (pyproject [dev]); the app never needs it
 
 PROJECT = Path(__file__).resolve().parent.parent
 COMPOSE_FILES = ("compose.yaml", "compose.gpu.yaml")
+OLLAMA_CPU_DOCKERFILE = PROJECT / "docker" / "ollama-cpu" / "Dockerfile"
+
+
+class _ComposeLoader(yaml.SafeLoader):
+    """``yaml.safe_load`` plus Compose's ``!reset`` merge tag (an override drops a key)."""
+
+
+_ComposeLoader.add_constructor("!reset", lambda _loader, _node: None)
 
 
 def _load(name: str) -> dict:
-    return yaml.safe_load((PROJECT / name).read_text(encoding="utf-8"))
+    text = (PROJECT / name).read_text(encoding="utf-8")
+    return yaml.load(text, Loader=_ComposeLoader)  # a SafeLoader subclass
 
 
 def _published(port: object) -> str:
@@ -92,6 +103,65 @@ def test_image_sets_the_container_flag_and_compose_does_not() -> None:
         for svc, spec in _load(name)["services"].items():
             env = spec.get("environment") or {}
             assert "RECRUITER_COPILOT_HOST" not in env, f"{name}:{svc} overrides the bind host"
+
+
+DIGEST_PINNED = re.compile(r"^[\w.\-/]+:[\w.\-]+@sha256:[0-9a-f]{64}$")
+
+
+def _syntax_pinned(dockerfile: str) -> None:
+    syntax = re.match(r"# syntax=(\S+)\n", dockerfile)  # the BuildKit frontend runs at build time
+    assert syntax and DIGEST_PINNED.match(syntax.group(1)), "the # syntax= frontend is not pinned"
+
+
+def test_app_base_image_and_frontend_are_pinned_by_digest() -> None:
+    """#2045: a re-pushed tag must not change what gets built (tag kept for readability)."""
+    dockerfile = (PROJECT / "Dockerfile").read_text(encoding="utf-8")
+    _syntax_pinned(dockerfile)
+    m = re.search(r"^ARG PYTHON_IMAGE=(\S+)$", dockerfile, re.M)
+    assert m, "the Dockerfile lost its PYTHON_IMAGE default"
+    assert DIGEST_PINNED.match(m.group(1)), f"base image not digest-pinned: {m.group(1)}"
+    assert m.group(1).startswith("python:3.12-slim-bookworm@")  # the gpu LD_LIBRARY_PATH needs 3.12
+    assert re.search(r"^FROM \$\{PYTHON_IMAGE\} AS base$", dockerfile, re.M)
+    for source in re.findall(r"^FROM\s+(\S+)", dockerfile, re.M):
+        assert source in {"${PYTHON_IMAGE}", "base"}, f"FROM {source} bypasses the pinned base"
+
+
+def test_every_pulled_image_is_pinned_by_digest() -> None:
+    for name in COMPOSE_FILES:
+        for svc, spec in _load(name)["services"].items():
+            if spec.get("build") is not None or "image" not in spec:
+                continue  # built here (second-chair*), FROM pinned inputs — see the tests around
+            image = spec["image"]
+            assert DIGEST_PINNED.match(image), f"{name}:{svc} image not digest-pinned: {image}"
+
+
+def test_cpu_ollama_is_a_checksum_pinned_release_and_gpu_runs_the_same_version() -> None:
+    """#2045: the CPU Ollama is built from the official release archive, sha256-checked by BuildKit
+    (a mismatch fails the build); the GPU file resets that build to the official image."""
+    cpu = _load("compose.yaml")["services"]["ollama"]
+    assert cpu["build"]["context"] == "docker/ollama-cpu"
+    gpu = _load("compose.gpu.yaml")["services"]["ollama"]
+    assert "build" in gpu and gpu["build"] is None, "compose.gpu.yaml must !reset the CPU build"
+    gpu_version = re.fullmatch(r"ollama/ollama:([\d.]+)@sha256:[0-9a-f]{64}", gpu["image"])
+    assert gpu_version, gpu["image"]
+
+    dockerfile = OLLAMA_CPU_DOCKERFILE.read_text(encoding="utf-8")
+    _syntax_pinned(dockerfile)
+    args = dict(re.findall(r"^ARG (\w+)=(\S+)$", dockerfile, re.M))
+    assert DIGEST_PINNED.match(args["BASE"]), "the Ollama base image is not digest-pinned"
+    assert re.fullmatch(r"[0-9a-f]{64}", args["OLLAMA_SHA256"])
+    assert args["OLLAMA_VERSION"] == gpu_version.group(1), "CPU and GPU Ollama versions differ"
+    assert f":{args['OLLAMA_VERSION']}-cpu" in cpu["image"]
+    assert re.search(
+        r"^ADD --checksum=sha256:\$\{OLLAMA_SHA256\} \\\n\s+https://github\.com/ollama/ollama/"
+        r"releases/download/v\$\{OLLAMA_VERSION\}/ollama-linux-amd64\.tar\.zst",
+        dockerfile,
+        re.M,
+    ), "the archive is not fetched from the official release with ADD --checksum"
+    assert "sha256sum -c" in dockerfile
+    assert not re.search(r"curl[^\n]*\|\s*(ba)?sh", dockerfile), "never curl | sh"
+    for source in re.findall(r"^FROM\s+(\S+)", dockerfile, re.M):
+        assert source == "${BASE}", f"FROM {source} bypasses the pinned base"
 
 
 def test_build_context_is_an_allow_list() -> None:

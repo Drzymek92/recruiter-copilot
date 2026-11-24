@@ -188,6 +188,37 @@ def test_replay_pushes_updates_over_events(demo_session, settings, replay_events
             assert transcript_len == 12
 
 
+def test_replay_end_is_in_the_last_snapshot(demo_session, settings, replay_events):
+    """#2043: the last event's snapshot already says ``running: False`` (no extra message);
+    a second replay while one runs is refused."""
+    with TestClient(create_app(settings, demo_session, replay_events)) as client:
+        with client.websocket_connect("/events") as ws:
+            assert ws.receive_json()["replay"] == {"running": False, "error": ""}
+            assert client.post("/replay", params={"delay": 0.0}).status_code == 202
+            seen = [ws.receive_json()["replay"] for _ in replay_events]
+            assert all(r["running"] for r in seen[:-1]) and seen[-1] == {
+                "running": False,
+                "error": "",
+            }
+            assert client.get("/session").json()["replay"]["running"] is False
+
+
+def test_a_replay_that_fails_reports_it_and_stops_running(demo_session, settings, replay_events):
+    cockpit = Cockpit(demo_session, settings, [*replay_events[:2], {"type": "question_state"}])
+    applied = asyncio.run(run_replay(cockpit, delay=0.0))
+    assert applied == 2 and cockpit.replay_running is False
+    assert cockpit.snapshot()["replay"]["error"].startswith("stopped after 2 of 3 events")
+
+
+def test_a_second_replay_is_refused_while_one_runs(demo_session, settings, replay_events):
+    app = create_app(settings, demo_session, replay_events)
+    with TestClient(app) as client:
+        app.state.cockpit.replay_running = True  # as if a replay were mid-way (no timing race)
+        again = client.post("/replay", params={"delay": 0.0})
+        assert again.status_code == 409 and "already running" in again.json()["error"]
+        app.state.cockpit.replay_running = False
+
+
 # ── F4 save-answer: spans + notes (pure) ─────────────────────────────────────────────────────
 
 

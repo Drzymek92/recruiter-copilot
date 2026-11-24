@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # Second Chair (D27) — the app image for compose.yaml (CPU, default) and compose.gpu.yaml (GPU).
 #
 #   docker compose build                                         # target cpu  → second-chair:cpu
@@ -9,7 +9,10 @@
 # compose publishes 127.0.0.1:<port> only (pinned by tests/test_compose.py). A bare `serve`
 # outside this image never has the flag and still refuses any non-loopback host.
 
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+# Pinned by digest (#2045): the tag is re-pushed upstream (it moved on 2026-11-24), the digest
+# never does, so every build starts from the same bytes. The tag stays for readability; Docker
+# uses the digest. Bump: README "Pinned images". Pinned by tests/test_compose.py.
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:44cf1793efa7c7a476bb0f2cff81443f4a072c90c1cb127e2924933daa3e8c64
 
 # ── base: the app + the [local] extra (faster-whisper on CPU, Ollama chat over HTTP) ──────────
 FROM ${PYTHON_IMAGE} AS base

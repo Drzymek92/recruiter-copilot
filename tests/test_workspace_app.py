@@ -751,3 +751,131 @@ def test_serve_without_a_bundle_means_the_workspace_home(tmp_path: Path, monkeyp
     )
     assert rc == 0 and seen["s"].workspace_dir == tmp_path / "w"
     assert "workspace home for" in "".join(out.lines)
+
+
+# ── #2043 polish: plain reasons, notes, CV-first interview create ───────────────────────────
+
+
+def test_validator_errors_carry_plain_sentences_beside_the_machine_form(
+    client: TestClient,
+) -> None:
+    slug = new_job(client)
+    generate(client, slug)
+    body = editor_body(client.get(f"/api/jobs/{slug}/draft").json())
+    body["questions"][1]["text"]["en"] = "  "
+    r = client.post(f"/api/jobs/{slug}/draft/accept", json=body)
+    assert r.status_code == 422
+    errors, messages = r.json()["errors"], r.json()["messages"]
+    assert len(messages) == len(errors)  # messages[i] explains errors[i]
+    i = errors.index("questions[1] (q2): no wording in session language 'en'")
+    assert messages[i] == "Question 2 needs an English wording."
+
+
+def test_cv_accept_errors_and_failed_tasks_carry_plain_sentences(root: Path) -> None:
+    broken = good_reply()
+    broken["questions"][0]["requirement_ids"] = ["r99"]
+    c = make_client(root, Chats(StubChat("not json", broken)))
+    task = generate(c, new_job(c))
+    assert task["state"] == "error" and len(task["messages"]) == len(task["reasons"])
+    assert "Question 1 is linked to requirement r99, which is not in the list." in task["messages"]
+
+
+def test_accept_and_save_return_notes_on_the_edited_content(client: TestClient) -> None:
+    """draft.warnings are shown when the draft opens; accept/save return the notes on what the
+    recruiter arranged — never an error, never blocking (both succeed)."""
+    slug = new_job(client)
+    generate(client, slug)
+    draft = client.get(f"/api/jobs/{slug}/draft").json()
+    assert isinstance(draft["warnings"], list)  # the editor shows these on open
+    body = editor_body(draft)
+    body["questions"][0]["requirement_ids"] = []  # q1 now probes nothing
+    r = client.post(f"/api/jobs/{slug}/draft/accept", json=body)
+    assert r.status_code == 200, r.text
+    assert any("linked to no requirement: q1" in w for w in r.json()["warnings"])
+    spec = client.get(f"/api/jobs/{slug}").json()["spec"]
+    bank = {
+        "target_minutes": spec["plan"]["target_minutes"],
+        "requirements": spec["requirements"],
+        "questions": spec["questions"],
+        "plan": spec["plan"],
+    }
+    saved = client.post(f"/api/jobs/{slug}/bank", json=bank)
+    assert saved.status_code == 200 and isinstance(saved.json()["warnings"], list)
+
+
+def _cv_put(client: TestClient, slug: str, form: dict, data: bytes, name: str):
+    from urllib.parse import quote
+
+    return client.put(
+        f"/api/jobs/{slug}/interviews",
+        content=data,
+        headers={"X-Filename": quote(name), "X-Interview": quote(json.dumps(form))},
+    )
+
+
+def test_start_interview_with_its_cv_in_one_request(
+    client: TestClient, root: Path, tmp_path: Path
+) -> None:
+    slug = _accepted_job(client)
+    consent = {"informed_by": "Recruiter A", "method": "verbal", "candidate_agreed": True}
+    form = {"candidate": "Zoë Example", "date": "2026-12-05", "consent": consent}
+    r = _cv_put(client, slug, form, CV.encode("utf-8"), "CV Zoë.md")
+    assert r.status_code == 200, r.text
+    assert r.json()["consent_recorded"] is True and r.json()["interview"]["has_cv"] is True
+    folder = root / "jobs" / slug / "interviews" / r.json()["name"]
+    assert (folder / "docs" / "cv.md").is_file()
+    interviews = root / "jobs" / slug / "interviews"
+    assert not list(interviews.glob(".upload-*"))  # the stage is gone
+
+
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [
+        ("cv.exe", b"MZ not a document"),  # unsupported type
+        ("cv.txt", b"   \n  "),  # no text
+        ("../cv.md", b"text"),  # a path
+    ],
+)
+def test_a_refused_cv_creates_no_interview(
+    client: TestClient, root: Path, tmp_path: Path, name: str, data: bytes
+) -> None:
+    slug = _accepted_job(client)
+    r = _cv_put(client, slug, {"candidate": "Refused Example", "date": "2026-12-06"}, data, name)
+    assert r.status_code == 422 and r.json()["field"] == "cv", r.text
+    interviews = root / "jobs" / slug / "interviews"
+    assert not interviews.exists() or not any(interviews.iterdir())  # nothing, not even a stage
+    assert client.get(f"/api/jobs/{slug}").json()["interviews"] == []
+
+
+def test_a_scanned_pdf_cv_creates_no_interview(client: TestClient, root: Path, tmp_path) -> None:
+    slug = _accepted_job(client)
+    pdf = write_scanned_pdf(tmp_path / "scan.pdf")
+    r = _cv_put(client, slug, {"candidate": "Scan Example"}, pdf.read_bytes(), "scan.pdf")
+    assert r.status_code == 422 and r.json()["field"] == "cv"
+    assert client.get(f"/api/jobs/{slug}").json()["interviews"] == []
+
+
+def test_cv_create_checks_the_form_first_and_caps_the_body(root: Path) -> None:
+    c = make_client(root, Chats(StubChat(good_reply())), max_upload_bytes=64)
+    slug = _accepted_job(c)
+    no_name = _cv_put(c, slug, {"candidate": " "}, b"cv text", "cv.md")
+    assert no_name.status_code == 422 and "field" not in no_name.json()  # the form, not the CV
+    half = {
+        "candidate": "A",
+        "consent": {"informed_by": "", "method": "x", "candidate_agreed": True},
+    }
+    assert _cv_put(c, slug, half, b"cv text", "cv.md").status_code == 422
+    big = _cv_put(c, slug, {"candidate": "Big Example"}, b"x" * 65, "cv.md")
+    assert big.status_code == 422 and big.json()["field"] == "cv"
+    missing = c.put(f"/api/jobs/{slug}/interviews", content=b"x", headers={"X-Filename": "cv.md"})
+    assert missing.status_code == 400
+    assert c.get(f"/api/jobs/{slug}").json()["interviews"] == []
+    later = c.post(f"/api/jobs/{slug}/interviews", json={"candidate": "Later Example"})
+    assert later.status_code == 200  # "Add CV" on the row stays for later
+    assert put_file_bytes(c, slug, later.json()["name"]).status_code == 200
+
+
+def put_file_bytes(client: TestClient, slug: str, name: str):
+    return client.put(
+        f"/api/interviews/{slug}/{name}/cv", content=b"short cv", headers={"X-Filename": "cv.md"}
+    )

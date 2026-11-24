@@ -139,6 +139,17 @@ docker compose down                                 # clean stop (see below)
   open cockpit the clean way (transcript saved, `.serve.lock` removed) and exits 0. Compose
   allows `stop_grace_period: 30s`, more than serve's 5 s + 4 s bound (see the stop timeouts under
   "Server host").
+- **The bundled Ollama (CPU).** `--build` builds it too, from `docker/ollama-cpu/Dockerfile`: the
+  official Ollama release archive for Linux, sha256-checked, with the GPU runtimes left out. It is
+  **274 MB** instead of the 9.4 GB official `ollama/ollama` image. It runs the same `ollama`
+  binary, so the analysis report came out identical on the test recording.
+- **The build warning** `Docker Compose is configured to build using Bake, but buildx isn't
+  installed` is harmless. Compose 2.40 hands builds to `docker buildx bake` by default. Some
+  distro packages (Ubuntu's `docker.io` + `docker-compose-v2`) ship without the buildx plugin, so
+  Compose falls back to its built-in BuildKit builder and builds the same images. To silence it,
+  install buildx (`sudo apt install docker-buildx` on Ubuntu). `COMPOSE_BAKE=false` does not
+  help: Compose 2.40 then prints a different warning, that its built-in builder will be removed in
+  the next release. So a later Compose will need buildx to build at all.
 
 **GPU.** `compose.gpu.yaml` builds the image's `gpu` target (adds cuBLAS 12 + cuDNN 9 for
 faster-whisper on CUDA), sets `STT_DEVICE=cuda` with `large-v3-turbo`, and reserves the NVIDIA GPU
@@ -152,11 +163,29 @@ docker compose exec app second-chair info           # should list a CUDA device 
 docker compose -f compose.yaml -f compose.gpu.yaml down
 ```
 
-Measured on Linux (Ubuntu 24.04, Docker 29.1, Ryzen 7 9700X, CPU file, cold): image build
-**58 s** (image 919 MB), `up` including the Ollama image pull **141 s** (`ollama/ollama` is
-9.4 GB), `llama3.2:3b` pull **54 s**. Opening a cockpit from the workspace page took 0.7 s.
-`analyse` of the 106 s fixture recording took **91 s**, including the first download of Whisper
-`small` (486 MB). The CPU decode itself took 43 s (rtf 0.41).
+The GPU file runs the official `ollama/ollama` image for Ollama (9.4 GB, it carries the CUDA
+runtimes) instead of the CPU build.
+
+**Pinned images.** Every build input is pinned. The Python base and the Dockerfile frontend are
+pinned by digest. The CPU Ollama is pinned by its release archive's sha256, so the build fails if
+the download does not match. The GPU Ollama image is pinned by digest. `tests/test_compose.py`
+checks all of this, and checks that both Ollama paths run the same version. To bump a digest,
+pull the tag and read its digest:
+`docker pull python:3.12-slim-bookworm && docker inspect --format '{{index .RepoDigests 0}}' python:3.12-slim-bookworm`.
+Then put `tag@sha256:<digest>` into `ARG PYTHON_IMAGE` in `Dockerfile` and `ARG BASE` in
+`docker/ollama-cpu/Dockerfile`. For `ollama/ollama:<version>` in `compose.gpu.yaml`, do the same.
+To bump Ollama, change `OLLAMA_VERSION` and `OLLAMA_SHA256` in `docker/ollama-cpu/Dockerfile`
+together. Take the sha256 from the `ollama-linux-amd64.tar.zst` line of that release's
+`sha256sum.txt`. For the `# syntax=` frontend, take the `docker/dockerfile:1@sha256:…` digest
+from the build log.
+
+Measured on Linux (Ubuntu 24.04, Docker 29.1, Ryzen 7 9700X, CPU file, 2026-11-24): a cold build
+of both images took **100 s**. That covers the app (919 MB) and the CPU Ollama (274 MB,
+including the 1.4 GB release download). The first `up --wait` took 36 s and later ones about
+13 s, both containers healthy. Ollama is ready 0.3 s after its container starts. Opening a
+cockpit from the workspace page took 0.7 s. `analyse` of the 106 s fixture recording took
+**68 s** with `llama3.2:3b` and a warm speech-model cache. The CPU decode took 18 s (rtf 0.18).
+The model ran at about 24 tokens/s. The first `analyse` also downloads Whisper `small` (486 MB).
 `stop` took 1.3 s, exit 0, no lock left. The GPU image builds (4.0 GB) but has **not been run on
 a GPU yet**. The test machine has no NVIDIA Container Toolkit.
 

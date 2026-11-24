@@ -57,7 +57,12 @@ services:
     stop_grace_period: 30s
 
   ollama:
-    image: ollama/ollama:0.40.2
+    # CPU: Ollama 0.40.2 from its official release archive (sha256-pinned), without the GPU
+    # runtimes — 274 MB instead of the 9.4 GB official image (#2045). compose.gpu.yaml swaps in
+    # the official image (digest-pinned). Bump: README "Pinned images".
+    build:
+      context: docker/ollama-cpu
+    image: second-chair-ollama:0.40.2-cpu
     # No `ports:` on purpose (D14 amendment): internal network only.
     volumes:
       - ollama-models:/root/.ollama

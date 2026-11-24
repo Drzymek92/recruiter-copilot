@@ -803,6 +803,27 @@ function render(state) {
   restoreNotesFocus(savedFocus);
   renderTranscript(state.transcript);
   renderLive(state.live);
+  syncReplay(state.replay);
+}
+
+// ── #2043 replay pill: the snapshot's `replay` says when the replay ends (or why it stopped) ──
+let replayOn = false;
+function syncReplay(r) {
+  if (!r) return;
+  if (r.running) {
+    replayOn = true;
+    $("replay-btn").disabled = true;
+    setLive("replaying…", true);
+    return;
+  }
+  if (!replayOn) return;   // only the running → finished transition resets the pill
+  endReplay(r.error ? "replay failed: " + r.error : "");
+}
+function endReplay(errorText) {
+  replayOn = false;
+  $("replay-btn").disabled = false;
+  if (errorText) setLive(errorText, false);
+  else setLive("live", true);   // back to idle: the events socket is still connected
 }
 
 // ── Live capture (M4, D13/D24; saves + Stop per D25): mic + call-tab audio → 16 kHz PCM16 → ws:/audio, one socket per role ──
@@ -1168,10 +1189,19 @@ async function boot() {
     setLiveStatus("this browser cannot share tab audio — use post-hoc upload", true);
   }
   $("replay-btn").addEventListener("click", async () => {
+    replayOn = true;
     $("replay-btn").disabled = true;
     setLive("replaying…", true);
-    await fetch("/replay?delay=0.7", { method: "POST" });
-    setTimeout(() => { $("replay-btn").disabled = false; }, 1000);
+    // the pill returns to idle when a snapshot says the replay finished (syncReplay)
+    try {
+      const r = await fetch("/replay?delay=0.7", { method: "POST" });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        endReplay("replay failed: " + (err.error || r.status));
+      }
+    } catch (e) {
+      endReplay("replay failed: the cockpit server is not reachable");
+    }
   });
 }
 

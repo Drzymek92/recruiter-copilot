@@ -122,6 +122,12 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 button.danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
 button.small { min-height: 26px; padding: 2px 8px; font-size: var(--fs-xs); }
 button.icon { min-width: 30px; justify-content: center; padding: 2px 6px; }
+/* #2043: ↑/↓ — enabled: ink glyph + --muted boundary (≥ 3:1 on the panel in every theme);
+   disabled: dimmer (--muted glyph, dashed --line-strong boundary, sunken) but still a button.
+   No opacity: .45 made them near-invisible in dark mode. */
+button.icon:not(:disabled) { border-color: var(--muted); }
+button.icon:hover:not(:disabled) { border-color: var(--accent); }
+button.icon:disabled { opacity: 1; color: var(--muted); background: var(--bg); border-color: var(--line-strong); border-style: dashed; }
 @media (pointer: coarse) { button, .btn { min-height: 44px; } button.icon { min-width: 44px; } }
 @media (prefers-reduced-motion: reduce) { button, .btn, .drop { transition: none; } }
 
@@ -158,6 +164,17 @@ legend { font-size: var(--fs-xs); color: var(--muted); font-weight: 650; padding
 .status.ok { border-left: 3px solid var(--answered); }
 .status.err { border-left: 3px solid var(--danger); background: var(--danger-soft); }
 .status.busy { border-left: 3px solid var(--asked); background: var(--asked-soft); }
+/* #2043: notes on a draft (draft.warnings) — calm, dismissible, never an error */
+.notices {
+  margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft);
+  border-left: 3px solid var(--accent); color: var(--ink); font-size: var(--fs-sm);
+}
+.notices-top { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.notices-h { margin: 0; font-weight: 650; }
+.notices ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.notices li { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+.notices .note-text { overflow-wrap: anywhere; min-width: 0; padding-top: 2px; }
+.notices li button { flex: 0 0 auto; }
 .field-err { color: var(--danger); font-size: var(--fs-xs); margin: 3px 0 0; font-weight: 600; overflow-wrap: anywhere; }
 ul.errs { margin: 6px 0 0; padding-left: 18px; color: var(--danger); font-size: var(--fs-sm); }
 

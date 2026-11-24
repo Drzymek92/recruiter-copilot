@@ -142,3 +142,19 @@ def test_cockpit_title_and_header_say_second_chair_but_prefs_key_is_kept(html: s
     assert '<span class="brand" id="brand">Second Chair</span>' in html
     assert '"recruiter-copilot.cockpit.prefs"' in html
     assert "recruiter-copilot analyse" not in html  # commands shown use the new name
+
+
+def test_replaying_pill_resets_when_the_replay_ends_or_fails(html: str) -> None:
+    """#2043: "replaying…" used to stay forever. The snapshot's ``replay`` drives the reset."""
+    script = "\n".join(re.findall(r"<script>(.*?)</script>", html, flags=re.S))
+    render = script[script.index("function render(state)") :]
+    assert "syncReplay(state.replay)" in render[: render.index("\n}\n")]
+    sync = script[script.index("function syncReplay(") : script.index("function endReplay(")]
+    assert 'setLive("replaying…", true)' in sync and "if (!replayOn) return;" in sync
+    end = script[script.index("function endReplay(") :]
+    end = end[: end.index("\n}\n")]
+    assert 'setLive("live", true)' in end and "disabled = false" in end  # back to idle
+    click = script[script.index('$("replay-btn").addEventListener("click"') :]
+    click = click[: click.index("\n  });")]
+    assert "if (!r.ok)" in click and "catch (e)" in click and click.count("endReplay(") == 2
+    assert "setTimeout" not in click  # no blind timer re-enabling the button mid-replay

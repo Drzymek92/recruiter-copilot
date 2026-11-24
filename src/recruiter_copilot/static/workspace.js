@@ -65,7 +65,9 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// fetch JSON; a non-2xx reply rejects with {status, message, errors}
+// fetch JSON; a non-2xx reply rejects with {status, message, errors, messages}:
+// errors = the validator's machine form (to place each reason next to its field),
+// messages[i] = errors[i] as a plain sentence for the recruiter (#2043).
 async function api(method, url, body) {
   const opts = { method: method, headers: {} };
   if (body !== undefined) {
@@ -85,29 +87,38 @@ async function api(method, url, body) {
       status: resp.status,
       message: (data && data.error) || ("request failed (" + resp.status + ")"),
       errors: (data && Array.isArray(data.errors)) ? data.errors : [],
+      messages: (data && Array.isArray(data.messages)) ? data.messages : [],
     };
   }
   return data;
 }
 
-// one file as a raw request body (no multipart parser on the server)
-async function uploadFile(url, file, maxMb) {
+// the plain sentence for reason i (falls back to the machine form)
+function plainAt(e, i) {
+  return (e.messages && typeof e.messages[i] === "string" && e.messages[i]) || e.errors[i];
+}
+
+// one file as a raw request body (no multipart parser on the server); extraHeaders e.g. the
+// start-interview form (X-Interview) sent together with its CV
+async function uploadFile(url, file, maxMb, extraHeaders) {
   if (maxMb && file.size > maxMb * 1048576) {
     throw { status: 413, message: file.name + " is larger than " + maxMb + " MB", errors: [] };
   }
+  const headers = Object.assign(
+    { "X-Filename": encodeURIComponent(file.name), "Content-Type": "application/octet-stream" },
+    extraHeaders || {});
   let resp;
   try {
-    resp = await fetch(url, {
-      method: "PUT",
-      body: file,
-      headers: { "X-Filename": encodeURIComponent(file.name), "Content-Type": "application/octet-stream" },
-    });
+    resp = await fetch(url, { method: "PUT", body: file, headers: headers });
   } catch (e) {
     throw { status: 0, message: "the workspace app is not reachable", errors: [] };
   }
   let data = null;
   try { data = await resp.json(); } catch (e) { data = null; }
-  if (!resp.ok) throw { status: resp.status, message: (data && data.error) || "upload failed", errors: [] };
+  if (!resp.ok) {
+    throw { status: resp.status, message: (data && data.error) || "upload failed", errors: [],
+      field: (data && data.field) || "" };
+  }
   return data;
 }
 
@@ -182,6 +193,46 @@ function mountDisplayControl(host) {
     patch[sel.dataset.pref] = sel.value;
     window.scPrefs.set(patch);
   });
+}
+
+// #2043: a calm, dismissible list of notes (draft.warnings) — for the recruiter's judgement,
+// never an error, never blocking Accept/Save. Every note is escaped. Dismiss = hide on this page
+// (nothing is stored). `fallbackFocus` receives focus when the last note is dismissed.
+function showNotes(host, list, heading, fallbackFocus) {
+  if (!host) return;
+  const items = (list || []).map(String);
+  const hid = host.id ? host.id + "-h" : "";
+  function draw(focusAt) {
+    if (!items.length) {
+      host.innerHTML = "";
+      if (focusAt !== undefined && fallbackFocus) fallbackFocus.focus();
+      return;
+    }
+    host.innerHTML =
+      '<div class="notices" role="group"' + (hid ? ' aria-labelledby="' + escapeHtml(hid) + '"' : "") + '>' +
+      '<div class="notices-top"><p class="notices-h"' + (hid ? ' id="' + escapeHtml(hid) + '"' : "") + '>' +
+      escapeHtml(heading) + '</p>' +
+      (items.length > 1 ? '<button type="button" class="small" data-note="all">Dismiss all</button>' : "") +
+      '</div><ul>' +
+      items.map((w, i) =>
+        '<li><span class="note-text">' + escapeHtml(w) + '</span>' +
+        '<button type="button" class="small" data-note="' + escapeHtml(i) + '" aria-label="Dismiss note ' +
+        escapeHtml(i + 1) + ' of ' + escapeHtml(items.length) + '">Dismiss</button></li>').join("") +
+      '</ul></div>';
+    if (focusAt !== undefined) {
+      const btns = host.querySelectorAll('button[data-note]:not([data-note="all"])');
+      const b = btns[Math.min(focusAt, btns.length - 1)];
+      if (b) b.focus();
+    }
+  }
+  host.onclick = (ev) => {
+    const b = ev.target.closest("button[data-note]");
+    if (!b) return;
+    if (b.dataset.note === "all") items.length = 0;
+    else items.splice(Number(b.dataset.note), 1);
+    draw(b.dataset.note === "all" ? 0 : Number(b.dataset.note));
+  };
+  draw();
 }
 
 function langLabel(code) {
